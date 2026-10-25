@@ -1,0 +1,2628 @@
+--=====================================================================
+--  ██╗   ██╗███████╗███╗   ██╗██╗ ██████╗███████╗
+--  ██║   ██║██╔════╝████╗  ██║██║██╔════╝██╔════╝
+--  ██║   ██║█████╗  ██╔██╗ ██║██║██║     █████╗
+--  ╚██╗ ██╔╝██╔══╝  ██║╚██╗██║██║██║     ██╔══╝
+--   ╚████╔╝ ███████╗██║ ╚████║██║╚██████╗███████╗
+--    ╚═══╝  ╚══════╝╚═╝  ╚═══╝╚═╝ ╚═════╝╚══════╝
+--
+--  VENICE HUB  •  STEAL AN EGG  •  v1.0.0
+--  Place ID: 107778070777162
+--
+--  Tabs: Aimbot | Silent Aim | ESP | FOV | Ovo (TP/Steal/Return) |
+--        Auto Farm | Eventos | Player | Skins | Config | Info
+--
+--  Carregue com:
+--  loadstring(game:HttpGet("SEU_RAW_URL_AQUI"))()
+--=====================================================================
+
+local HUB = {}
+HUB.Name    = "Venice Hub"
+HUB.Version = "1.0.0"
+HUB.Place   = 107778070777162
+HUB.Folder  = "VeniceHub/StealAnEgg"
+
+local Services, Util, Flags, State = {}, {}, {}, {}
+local UI, Notify, Egg, Combat, Visuals, PlayerMod, Farm, Events, Skin, Cfg = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+
+--=====================================================================
+-- 1) SERVIÇOS
+--=====================================================================
+do
+    local s = game.GetService
+    Services.Players  = s(game, "Players")
+    Services.Run      = s(game, "RunService")
+    Services.UIS      = s(game, "UserInputService")
+    Services.Tween    = s(game, "TweenService")
+    Services.RS       = s(game, "ReplicatedStorage")
+    Services.WS       = s(game, "Workspace")
+    Services.Lighting = s(game, "Lighting")
+    Services.Http     = s(game, "HttpService")
+    Services.VU       = s(game, "VirtualUser")
+    Services.VIM      = s(game, "VirtualInputManager")
+    Services.Cam      = Services.WS.CurrentCamera
+    Services.LP       = Services.Players.LocalPlayer
+    Services.Mouse    = Services.LP:GetMouse()
+    Services.RS.ChildAdded:Connect(function(c)
+        if c:IsA("Camera") then Services.Cam = c end
+    end)
+end
+
+local LP = Services.LP
+local RS = Services.RS
+local WS = Services.WS
+local Run = Services.Run
+local UIS = Services.UIS
+
+--=====================================================================
+-- 2) UTILITÁRIOS / COMPATIBILIDADE COM EXECUTORS
+--=====================================================================
+do
+    Util.IsMobile = UIS.TouchEnabled and not UIS.KeyboardEnabled
+
+    function Util.HasDrawing()
+        return type(rawget(getfenv(0), "Drawing")) == "table"
+            or (typeof and typeof(Drawing) == "table")
+    end
+
+    function Util.FileAPI()
+        return type(writefile) == "function"
+           and type(readfile) == "function"
+           and type(isfile) == "function"
+    end
+
+    function Util.Clipboard(txt)
+        if type(setclipboard) == "function" then setclipboard(txt)
+        elseif type(toclipboard) == "function" then toclipboard(txt) end
+    end
+
+    function Util.Clamp(v, a, b) return math.max(a, math.min(b, v)) end
+    function Util.Round(v, d)
+        local m = 10 ^ (d or 0)
+        return math.floor(v * m + 0.5) / m
+    end
+
+    function Util.Format(n)
+        n = tonumber(n) or 0
+        local units = { {1e12,"T"}, {1e9,"B"}, {1e6,"M"}, {1e3,"K"} }
+        for _, u in ipairs(units) do
+            if n >= u[1] then return string.format("%.2f%s", n / u[1], u[2]) end
+        end
+        return tostring(math.floor(n))
+    end
+
+    function Util.Dist(a, b)
+        if not a or not b then return math.huge end
+        return (a - b).Magnitude
+    end
+
+    function Util.PlayersList(excludeLocal)
+        local t = {}
+        for _, p in ipairs(Services.Players:GetPlayers()) do
+            if not excludeLocal or p ~= LP then t[#t + 1] = p end
+        end
+        return t
+    end
+
+    function Util.ByNameOrId(key)
+        key = tostring(key):gsub("^%s+", ""):gsub("%s+$", "")
+        if key == "" then return nil end
+        for _, p in ipairs(Services.Players:GetPlayers()) do
+            if p.Name:lower() == key:lower()
+            or p.DisplayName:lower() == key:lower()
+            or tostring(p.UserId) == key then
+                return p
+            end
+        end
+        return nil
+    end
+
+    function Util.Char(p)
+        p = p or LP
+        local c = p.Character
+        if c and c.Parent and c:FindFirstChild("HumanoidRootPart") then return c end
+        return nil
+    end
+
+    function Util.Root(p)
+        local c = Util.Char(p)
+        return c and c:FindFirstChild("HumanoidRootPart") or nil
+    end
+
+    function Util.Hum(p)
+        local c = Util.Char(p)
+        return c and c:FindFirstChildOfClass("Humanoid") or nil
+    end
+
+    -- pega o objeto do ovo a partir de um prompt (usado no steal)
+    function Util.PromptEgg(prompt)
+        for _, k in ipairs({ "Egg", "ObjectValue", "Target", "Parent" }) do
+            local o = prompt:FindFirstChild(k)
+            if o and o:IsA("ObjectValue") and o.Value then return o.Value end
+        end
+        local p = prompt.Parent
+        if p and p.Name ~= "SmartPromptPart" then return p end
+        return prompt
+    end
+end
+
+--=====================================================================
+-- 3) FLAGS (padrões)  — tudo ajustável e salvável
+--=====================================================================
+local D = {
+    -- Aimbot
+    Aim_Enabled = false, Aim_Key = "E", Aim_Mode = "Hold", Aim_Bone = "Head",
+    Aim_Smooth = 0.25, Aim_Fov = 90, Aim_MaxDist = 500, Aim_TeamCheck = true,
+    Aim_VisCheck = true, Aim_Prediction = 0.15, Aim_Targets = { "Players" },
+    Aim_Priority = "Distância", Aim_LockEgg = false,
+    -- Silent
+    Silent_Enabled = false, Silent_Key = "Q", Silent_Mode = "Camera",
+    Silent_HitChance = 100, Silent_Fov = 120, Silent_Dist = 600,
+    Silent_RemoteMode = "Inteligente", Silent_Debug = false,
+    -- ESP
+    Esp_Enabled = false, Esp_Box = true, Esp_Name = true, Esp_Dist = true,
+    Esp_Health = true, Esp_Tracer = true, Esp_Chams = false, Esp_Skeleton = false,
+    Esp_Tag = true, Esp_MaxDist = 1000, Esp_TextSize = 13, Esp_TracerFrom = "Topo",
+    Esp_Eggs = true, Esp_EggRarity = true, Esp_EggIncome = true, Esp_EggMutation = true,
+    Esp_Guards = true, Esp_Npcs = false, Esp_TeamColor = true, Esp_OwnBase = false,
+    Esp_BoxColor = Color3.fromRGB(140, 110, 255),
+    Esp_EggColor = Color3.fromRGB(255, 210, 90),
+    -- FOV
+    Fov_Enabled = false, Fov_Radius = 90, Fov_Color = Color3.fromRGB(140, 110, 255),
+    Fov_Thickness = 1.5, Fov_Transparency = 0.3, Fov_Filled = false, Fov_Sides = 64,
+    -- Ovo / Steal
+    Egg_AutoSteal = false, Egg_AutoReturn = true, Egg_AutoDeposit = true,
+    Egg_ApproachDist = 6, Egg_Retries = 4, Egg_StealSpeed = 120,
+    Egg_StealDelay = 0.15, Egg_ReturnSpeed = 160, Egg_MaxDist = 900,
+    Egg_UseRemote = true, Egg_UsePrompt = true, Egg_UseTouch = true,
+    Egg_Verify = true, Egg_AutoRare = false, Egg_SkipOwnBase = true,
+    Egg_RarityMin = "Raro", Egg_IncomeMin = 0, Egg_MutationPriority = true,
+    Egg_Selected = "Aleatório",
+    -- Farm
+    Farm_Enabled = false, Farm_Hatch = true, Farm_Claim = true, Farm_Treadmill = true,
+    Farm_Sell = false, Farm_Upgrade = false, Farm_EquipBest = true,
+    Farm_HatchDelay = 0.4, Farm_ClaimDelay = 2, Farm_Zone = "Auto",
+    -- Eventos
+    Event_Auto = false, Event_DrScramble = true, Event_Rift = true,
+    Event_GreatBloom = true, Event_HungryFrog = true, Event_Halloween = true,
+    Event_NitroRace = false, Event_Announce = true, Event_Teleport = true,
+    Event_ScanDelay = 1.0, Event_Range = 2000,
+    -- Player
+    Plr_Speed = 60, Plr_SpeedEnabled = false, Plr_Fly = false, Plr_FlySpeed = 90,
+    Plr_InfJump = false, Plr_Noclip = false, Plr_AntiTrap = true, Plr_AntiGuard = true,
+    Plr_AntiRagdoll = true, Plr_AntiStun = true, Plr_NoFall = true, Plr_Fullbright = false,
+    Plr_NoFog = false, Plr_AntiAfk = true, Plr_HipHeight = 2, Plr_AvoidRadius = 30,
+    -- Skins
+    Skin_AllPlayers = false, Skin_Target = "", Skin_VisibleToAll = true,
+    Skin_AutoApply = false, Skin_ScanDelay = 3,
+    -- Config / sistema
+    Sys_AutoSave = true, Sys_AutoSaveInterval = 60, Sys_Notify = true,
+    Sys_Watermark = true, Sys_Fps = true, Sys_AntiKick = true, Sys_AutoRejoin = false,
+    Sys_UiKey = "RightShift", Sys_PanicKey = "End", Sys_Theme = "Venice",
+}
+Flags = D
+
+--=====================================================================
+-- 4) NOTIFICAÇÕES
+--=====================================================================
+do
+    local holder
+
+    function Notify.Init(parent)
+        holder = Instance.new("Frame")
+        holder.Name = "VH_Notifs"
+        holder.BackgroundTransparency = 1
+        holder.AnchorPoint = Vector2.new(1, 0)
+        holder.Position = UDim2.new(1, -18, 0, 18)
+        holder.Size = UDim2.new(0, 300, 0, 400)
+        holder.Parent = parent
+        local lay = Instance.new("UIListLayout")
+        lay.Padding = UDim.new(0, 8)
+        lay.SortOrder = Enum.SortOrder.LayoutOrder
+        lay.Parent = holder
+    end
+
+    function Notify.Push(title, text, dur, kind)
+        if not Flags.Sys_Notify or not holder then return end
+        local colors = {
+            info = UI.Theme.Accent, ok = UI.Theme.Good,
+            warn = UI.Theme.Warn, err = UI.Theme.Bad,
+        }
+        local col = colors[kind or "info"] or UI.Theme.Accent
+
+        local f = Instance.new("Frame")
+        f.BackgroundColor3 = UI.Theme.Surface
+        f.Size = UDim2.new(1, 0, 0, 0)
+        f.AutomaticSize = Enum.AutomaticSize.Y
+        f.Parent = holder
+        UI.Corner(f, 8); UI.Stroke(f, col, 1, 0.4)
+
+        local bar = Instance.new("Frame")
+        bar.BackgroundColor3 = col
+        bar.Size = UDim2.new(0, 3, 1, -12)
+        bar.Position = UDim2.new(0, 6, 0, 6)
+        bar.Parent = f
+        UI.Corner(bar, 4)
+
+        local pad = Instance.new("UIPadding")
+        pad.PaddingLeft = UDim.new(0, 16); pad.PaddingRight = UDim.new(0, 12)
+        pad.PaddingTop = UDim.new(0, 8); pad.PaddingBottom = UDim.new(0, 8)
+        pad.Parent = f
+
+        local t = Instance.new("TextLabel")
+        t.BackgroundTransparency = 1
+        t.Text = title
+        t.Font = UI.Theme.FontBold
+        t.TextSize = 13
+        t.TextColor3 = col
+        t.TextXAlignment = Enum.TextXAlignment.Left
+        t.Size = UDim2.new(1, 0, 0, 16)
+        t.Parent = f
+
+        local b = Instance.new("TextLabel")
+        b.BackgroundTransparency = 1
+        b.Text = text
+        b.Font = UI.Theme.Font
+        b.TextSize = 12
+        b.TextWrapped = true
+        b.TextColor3 = UI.Theme.SubText
+        b.TextXAlignment = Enum.TextXAlignment.Left
+        b.Position = UDim2.new(0, 0, 0, 18)
+        b.Size = UDim2.new(1, 0, 0, 0)
+        b.AutomaticSize = Enum.AutomaticSize.Y
+        b.Parent = f
+
+        task.delay(dur or 4, function()
+            local tw = Services.Tween:Create(f, TweenInfo.new(0.25), {
+                BackgroundTransparency = 1,
+            })
+            tw:Play()
+            for _, c in ipairs(f:GetDescendants()) do
+                if c:IsA("TextLabel") then
+                    Services.Tween:Create(c, TweenInfo.new(0.25), { TextTransparency = 1 }):Play()
+                end
+            end
+            task.wait(0.3)
+            f:Destroy()
+        end)
+    end
+end
+
+--=====================================================================
+-- 5) BIBLIOTECA DE UI (tema Venice — escuro, roxo/ciano)
+--=====================================================================
+UI.Theme = {
+    Bg       = Color3.fromRGB(13, 13, 18),
+    Surface  = Color3.fromRGB(19, 19, 26),
+    Surface2 = Color3.fromRGB(25, 25, 34),
+    Stroke   = Color3.fromRGB(42, 42, 58),
+    Text     = Color3.fromRGB(236, 236, 246),
+    SubText  = Color3.fromRGB(139, 139, 162),
+    Accent   = Color3.fromRGB(140, 110, 255),
+    Accent2  = Color3.fromRGB(88, 200, 255),
+    Good     = Color3.fromRGB(88, 219, 141),
+    Bad      = Color3.fromRGB(255, 95, 112),
+    Warn     = Color3.fromRGB(255, 190, 82),
+    Font     = Enum.Font.GothamMedium,
+    FontBold = Enum.Font.GothamBold,
+}
+UI.Elements = {}   -- registry p/ config load
+UI.Keybinds = {}
+
+function UI.New(class, props, parent)
+    local i = Instance.new(class)
+    for k, v in pairs(props or {}) do
+        if k ~= "Parent" then i[k] = v end
+    end
+    i.Parent = parent
+    return i
+end
+
+function UI.Corner(obj, r)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, r or 6)
+    c.Parent = obj
+    return c
+end
+
+function UI.Stroke(obj, col, thick, trans)
+    local s = Instance.new("UIStroke")
+    s.Color = col or UI.Theme.Stroke
+    s.Thickness = thick or 1
+    s.Transparency = trans or 0
+    s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    s.Parent = obj
+    return s
+end
+
+function UI.Padding(obj, l, r, t, b)
+    local p = Instance.new("UIPadding")
+    p.PaddingLeft = UDim.new(0, l or 0)
+    p.PaddingRight = UDim.new(0, r or 0)
+    p.PaddingTop = UDim.new(0, t or 0)
+    p.PaddingBottom = UDim.new(0, b or 0)
+    p.Parent = obj
+end
+
+function UI.List(obj, padding, dir)
+    local l = Instance.new("UIListLayout")
+    l.Padding = UDim.new(0, padding or 6)
+    l.SortOrder = Enum.SortOrder.LayoutOrder
+    l.FillDirection = dir or Enum.FillDirection.Vertical
+    l.Parent = obj
+    return l
+end
+
+-- ---------- Janela ----------
+function UI:Build()
+    local gui = UI.New("ScreenGui", {
+        Name = "VeniceHub",
+        ResetOnSpawn = false,
+        IgnoreGuiInset = true,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+    }, (gethui and gethui()) or Services.LP:WaitForChild("PlayerGui"))
+
+    Notify.Init(gui)
+
+    -- container principal
+    local win = UI.New("Frame", {
+        Name = "Window",
+        Size = UDim2.new(0, 640, 0, 430),
+        Position = UDim2.new(0.5, -320, 0.5, -215),
+        BackgroundColor3 = UI.Theme.Bg,
+        BorderSizePixel = 0,
+    }, gui)
+    UI.Corner(win, 12)
+    UI.Stroke(win, UI.Theme.Stroke, 1, 0)
+    self.Window = win
+
+    -- barra de topo
+    local top = UI.New("Frame", {
+        Size = UDim2.new(1, 0, 0, 40),
+        BackgroundColor3 = UI.Theme.Surface,
+        BorderSizePixel = 0,
+    }, win)
+    UI.Corner(top, 12)
+    local topFix = UI.New("Frame", {
+        Size = UDim2.new(1, 0, 0, 14),
+        Position = UDim2.new(0, 0, 1, -14),
+        BackgroundColor3 = UI.Theme.Surface,
+        BorderSizePixel = 0,
+    }, top)
+
+    local title = UI.New("TextLabel", {
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 16, 0, 0),
+        Size = UDim2.new(1, -160, 1, 0),
+        Font = UI.Theme.FontBold, TextSize = 15,
+        TextColor3 = UI.Theme.Text,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Text = HUB.Name .. "  •  " .. HUB.Version,
+    }, top)
+
+    local sub = UI.New("TextLabel", {
+        BackgroundTransparency = 1,
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -78, 0.5, 0),
+        Size = UDim2.new(0, 120, 1, 0),
+        Font = UI.Theme.Font, TextSize = 11,
+        TextColor3 = UI.Theme.Accent2,
+        TextXAlignment = Enum.TextXAlignment.Right,
+        Text = "STEAL AN EGG",
+    }, top)
+
+    local function topBtn(txt, x, cb)
+        local b = UI.New("TextButton", {
+            AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, x, 0.5, 0),
+            Size = UDim2.new(0, 24, 0, 24),
+            BackgroundColor3 = UI.Theme.Surface2,
+            Font = UI.Theme.FontBold, TextSize = 14,
+            TextColor3 = UI.Theme.SubText, Text = txt,
+            AutoButtonColor = false,
+        }, top)
+        UI.Corner(b, 6)
+        b.MouseEnter:Connect(function() b.TextColor3 = UI.Theme.Text end)
+        b.MouseLeave:Connect(function() b.TextColor3 = UI.Theme.SubText end)
+        b.MouseButton1Click:Connect(cb)
+        return b
+    end
+
+    topBtn("–", -46, function()
+        win.Visible = false
+    end)
+    topBtn("×", -16, function()
+        win.Visible = false
+    end)
+
+    -- drag
+    local dragging, dragStart, startPos
+    top.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1
+        or i.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = i.Position
+            startPos = win.Position
+            i.Changed:Connect(function()
+                if i.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    UIS.InputChanged:Connect(function(i)
+        if not dragging then return end
+        if i.UserInputType == Enum.UserInputType.MouseMovement
+        or i.UserInputType == Enum.UserInputType.Touch then
+            local d = i.Position - dragStart
+            win.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + d.X,
+                startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        end
+    end)
+
+    -- rail de abas
+    local rail = UI.New("Frame", {
+        Position = UDim2.new(0, 8, 0, 46),
+        Size = UDim2.new(0, 132, 1, -54),
+        BackgroundColor3 = UI.Theme.Surface,
+        BorderSizePixel = 0,
+    }, win)
+    UI.Corner(rail, 10)
+    UI.Padding(rail, 6, 6, 8, 8)
+    UI.List(rail, 4)
+
+    local railScroll = UI.New("ScrollingFrame", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 1, 0),
+        CanvasSize = UDim2.new(0, 0, 0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = UI.Theme.Stroke,
+        BorderSizePixel = 0,
+    }, rail)
+    UI.List(railScroll, 4)
+
+    -- conteúdo
+    local content = UI.New("Frame", {
+        Position = UDim2.new(0, 148, 0, 46),
+        Size = UDim2.new(1, -156, 1, -54),
+        BackgroundTransparency = 1,
+    }, win)
+
+    self.Rail, self.Content, self.Gui = railScroll, content, gui
+
+    -- botão flutuante quando escondido
+    local fab = UI.New("TextButton", {
+        Name = "FAB",
+        Size = UDim2.new(0, 44, 0, 44),
+        Position = UDim2.new(0, 20, 0.5, -22),
+        BackgroundColor3 = UI.Theme.Accent,
+        Font = UI.Theme.FontBold, TextSize = 18,
+        TextColor3 = Color3.new(1, 1, 1), Text = "V",
+        Visible = false, AutoButtonColor = false,
+    }, gui)
+    UI.Corner(fab, 12)
+    fab.MouseButton1Click:Connect(function() win.Visible = true end)
+    UIS.InputBegan:Connect(function(i, gp)
+        if gp then return end
+        if i.KeyCode == Enum.KeyCode[Flags.Sys_UiKey] then
+            win.Visible = not win.Visible
+            fab.Visible = not win.Visible
+        end
+    end)
+
+    Notify.Push("Venice Hub", "Carregado com sucesso. Pressione " .. Flags.Sys_UiKey .. " para esconder.", 5, "ok")
+end
+
+-- ---------- Aba ----------
+function UI:Tab(name, icon)
+    local btn = UI.New("TextButton", {
+        Size = UDim2.new(1, 0, 0, 32),
+        BackgroundColor3 = UI.Theme.Surface,
+        Font = UI.Theme.Font, TextSize = 12,
+        TextColor3 = UI.Theme.SubText,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Text = "   " .. (icon and (icon .. "  ") or "") .. name,
+        AutoButtonColor = false,
+    }, self.Rail)
+    UI.Corner(btn, 7)
+
+    local page = UI.New("ScrollingFrame", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 1, 0),
+        CanvasSize = UDim2.new(0, 0, 0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = UI.Theme.Stroke,
+        BorderSizePixel = 0,
+        Visible = false,
+    }, self.Content)
+    UI.List(page, 8)
+    UI.Padding(page, 0, 6, 0, 10)
+
+    local tab = { Button = btn, Page = page }
+
+    local function select()
+        for _, t in pairs(self.Tabs or {}) do
+            t.Button.BackgroundColor3 = UI.Theme.Surface
+            t.Button.TextColor3 = UI.Theme.SubText
+            t.Page.Visible = false
+        end
+        btn.BackgroundColor3 = UI.Theme.Accent
+        btn.TextColor3 = Color3.new(1, 1, 1)
+        page.Visible = true
+    end
+    btn.MouseButton1Click:Connect(select)
+
+    self.Tabs = self.Tabs or {}
+    table.insert(self.Tabs, tab)
+    if #self.Tabs == 1 then select() end
+    return tab
+end
+
+-- ---------- Seção ----------
+function UI:Section(tab, title)
+    local holder = UI.New("Frame", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+    }, tab.Page)
+    UI.List(holder, 6)
+
+    local lbl = UI.New("TextLabel", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 20),
+        Font = UI.Theme.FontBold, TextSize = 12,
+        TextColor3 = UI.Theme.Accent2,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Text = "▎ " .. title,
+    }, holder)
+
+    local body = UI.New("Frame", {
+        BackgroundColor3 = UI.Theme.Surface,
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BorderSizePixel = 0,
+    }, holder)
+    UI.Corner(body, 9)
+    UI.Padding(body, 10, 10, 8, 8)
+    UI.List(body, 7)
+
+    return { Holder = holder, Body = body }
+end
+
+-- ---------- Toggle ----------
+function UI:Toggle(parent, label, key, cb)
+    local row = UI.New("Frame", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 26),
+    }, parent)
+    local txt = UI.New("TextLabel", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, -50, 1, 0),
+        Font = UI.Theme.Font, TextSize = 12,
+        TextColor3 = UI.Theme.Text,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Text = label,
+    }, row)
+
+    local sw = UI.New("TextButton", {
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, 0, 0.5, 0),
+        Size = UDim2.new(0, 38, 0, 20),
+        BackgroundColor3 = UI.Theme.Surface2,
+        Text = "", AutoButtonColor = false,
+    }, row)
+    UI.Corner(sw, 10)
+    local knob = UI.New("Frame", {
+        Size = UDim2.new(0, 14, 0, 14),
+        Position = UDim2.new(0, 3, 0.5, -7),
+        BackgroundColor3 = UI.Theme.SubText,
+        BorderSizePixel = 0,
+    }, sw)
+    UI.Corner(knob, 7)
+
+    local state = Flags[key] and true or false
+    local function render()
+        Services.Tween:Create(sw, TweenInfo.new(0.15), {
+            BackgroundColor3 = state and UI.Theme.Accent or UI.Theme.Surface2,
+        }):Play()
+        Services.Tween:Create(knob, TweenInfo.new(0.15), {
+            Position = state and UDim2.new(1, -17, 0.5, -7) or UDim2.new(0, 3, 0.5, -7),
+            BackgroundColor3 = state and Color3.new(1, 1, 1) or UI.Theme.SubText,
+        }):Play()
+    end
+    render()
+
+    local function set(v, fire)
+        state = v and true or false
+        Flags[key] = state
+        render()
+        if fire and cb then cb(state) end
+    end
+
+    sw.MouseButton1Click:Connect(function() set(not state, true) end)
+    UI.Elements[key] = { set = set, get = function() return state end }
+    return row
+end
+
+-- ---------- Slider ----------
+function UI:Slider(parent, label, key, min, max, dec, cb)
+    local row = UI.New("Frame", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 36),
+    }, parent)
+    local txt = UI.New("TextLabel", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, -60, 0, 16),
+        Font = UI.Theme.Font, TextSize = 12,
+        TextColor3 = UI.Theme.Text,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Text = label,
+    }, row)
+    local val = UI.New("TextLabel", {
+        BackgroundTransparency = 1,
+        AnchorPoint = Vector2.new(1, 0),
+        Position = UDim2.new(1, 0, 0, 0),
+        Size = UDim2.new(0, 60, 0, 16),
+        Font = UI.Theme.FontBold, TextSize = 12,
+        TextColor3 = UI.Theme.Accent2,
+        TextXAlignment = Enum.TextXAlignment.Right,
+        Text = tostring(Flags[key] or min),
+    }, row)
+
+    local bar = UI.New("TextButton", {
+        Position = UDim2.new(0, 0, 0, 22),
+        Size = UDim2.new(1, 0, 0, 8),
+        BackgroundColor3 = UI.Theme.Surface2,
+        Text = "", AutoButtonColor = false,
+    }, row)
+    UI.Corner(bar, 4)
+    local fill = UI.New("Frame", {
+        Size = UDim2.new(0, 0, 1, 0),
+        BackgroundColor3 = UI.Theme.Accent,
+        BorderSizePixel = 0,
+    }, bar)
+    UI.Corner(fill, 4)
+
+    local value = tonumber(Flags[key]) or min
+    local dragging = false
+
+    local function render()
+        local a = (value - min) / math.max(max - min, 1e-9)
+        fill.Size = UDim2.new(Util.Clamp(a, 0, 1), 0, 1, 0)
+        val.Text = tostring(Util.Round(value, dec))
+    end
+
+    local function apply(x)
+        local a = Util.Clamp((x - bar.AbsolutePosition.X) / bar.AbsoluteSize.X, 0, 1)
+        value = Util.Round(min + (max - min) * a, dec)
+        Flags[key] = value
+        render()
+        if cb then cb(value) end
+    end
+
+    bar.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1
+        or i.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            apply(i.Position.X)
+        end
+    end)
+    UIS.InputChanged:Connect(function(i)
+        if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement
+        or i.UserInputType == Enum.UserInputType.Touch) then
+            apply(i.Position.X)
+        end
+    end)
+    UIS.InputEnded:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1
+        or i.UserInputType == Enum.UserInputType.Touch then dragging = false end
+    end)
+
+    render()
+    UI.Elements[key] = {
+        set = function(v) value = tonumber(v) or min; Flags[key] = value; render() end,
+        get = function() return value end,
+    }
+    return row
+end
+
+-- ---------- Dropdown ----------
+function UI:Dropdown(parent, label, key, options, multi, cb)
+    local row = UI.New("Frame", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+    }, parent)
+
+    local head = UI.New("TextButton", {
+        Size = UDim2.new(1, 0, 0, 28),
+        BackgroundColor3 = UI.Theme.Surface2,
+        Font = UI.Theme.Font, TextSize = 12,
+        TextColor3 = UI.Theme.Text,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Text = "  " .. label,
+        AutoButtonColor = false,
+    }, row)
+    UI.Corner(head, 7)
+
+    local arrow = UI.New("TextLabel", {
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -8, 0.5, 0),
+        Size = UDim2.new(0, 12, 1, 0),
+        BackgroundTransparency = 1,
+        Font = UI.Theme.FontBold, TextSize = 12,
+        TextColor3 = UI.Theme.SubText, Text = "v",
+    }, head)
+
+    local list = UI.New("Frame", {
+        Position = UDim2.new(0, 0, 0, 32),
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundColor3 = UI.Theme.Bg,
+        Visible = false,
+        BorderSizePixel = 0,
+    }, row)
+    UI.Corner(list, 7)
+    UI.Padding(list, 4, 4, 4, 4)
+    UI.List(list, 3)
+
+    local value = Flags[key]
+    if multi and type(value) ~= "table" then
+        value = type(value) == "table" and value or { options[1] }
+        Flags[key] = value
+    end
+
+    local function labelText()
+        if multi then
+            local t = type(value) == "table" and value or {}
+            if #t == 0 then return "  " .. label .. ": nenhum" end
+            return "  " .. label .. ": " .. table.concat(t, ", ")
+        end
+        return "  " .. label .. ": " .. tostring(value or "-")
+    end
+
+    local function refresh() head.Text = labelText() end
+
+    for _, opt in ipairs(options) do
+        local ob = UI.New("TextButton", {
+            Size = UDim2.new(1, 0, 0, 24),
+            BackgroundColor3 = UI.Theme.Bg,
+            Font = UI.Theme.Font, TextSize = 12,
+            TextColor3 = UI.Theme.SubText,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Text = "   " .. opt,
+            AutoButtonColor = false,
+        }, list)
+        UI.Corner(ob, 6)
+        ob.MouseEnter:Connect(function() ob.BackgroundColor3 = UI.Theme.Surface2 end)
+        ob.MouseLeave:Connect(function() ob.BackgroundColor3 = UI.Theme.Bg end)
+        ob.MouseButton1Click:Connect(function()
+            if multi then
+                local t = type(value) == "table" and value or {}
+                local idx
+                for i, v in ipairs(t) do if v == opt then idx = i break end end
+                if idx then table.remove(t, idx) else t[#t + 1] = opt end
+                value = t
+                Flags[key] = t
+            else
+                value = opt
+                Flags[key] = opt
+                list.Visible = false
+                arrow.Text = "v"
+            end
+            refresh()
+            if cb then cb(value) end
+        end)
+    end
+
+    head.MouseButton1Click:Connect(function()
+        list.Visible = not list.Visible
+        arrow.Text = list.Visible and "^" or "v"
+    end)
+
+    refresh()
+    UI.Elements[key] = { set = function(v) value = v; Flags[key] = v; refresh() end }
+    return row
+end
+
+-- ---------- Botão ----------
+function UI:Button(parent, label, cb, color)
+    local b = UI.New("TextButton", {
+        Size = UDim2.new(1, 0, 0, 30),
+        BackgroundColor3 = color or UI.Theme.Accent,
+        Font = UI.Theme.FontBold, TextSize = 12,
+        TextColor3 = Color3.new(1, 1, 1),
+        Text = label, AutoButtonColor = false,
+    }, parent)
+    UI.Corner(b, 7)
+    b.MouseEnter:Connect(function()
+        Services.Tween:Create(b, TweenInfo.new(0.12), { BackgroundTransparency = 0.15 }):Play()
+    end)
+    b.MouseLeave:Connect(function()
+        Services.Tween:Create(b, TweenInfo.new(0.12), { BackgroundTransparency = 0 }):Play()
+    end)
+    b.MouseButton1Click:Connect(function()
+        local ok, err = pcall(cb)
+        if not ok then Notify.Push("Erro", tostring(err), 4, "err") end
+    end)
+    return b
+end
+
+-- ---------- Textbox ----------
+function UI:Textbox(parent, label, key, placeholder, cb)
+    local row = UI.New("Frame", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 44),
+    }, parent)
+    local txt = UI.New("TextLabel", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 15),
+        Font = UI.Theme.Font, TextSize = 12,
+        TextColor3 = UI.Theme.Text,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Text = label,
+    }, row)
+    local box = UI.New("TextBox", {
+        Position = UDim2.new(0, 0, 0, 19),
+        Size = UDim2.new(1, 0, 0, 24),
+        BackgroundColor3 = UI.Theme.Surface2,
+        Font = UI.Theme.Font, TextSize = 12,
+        TextColor3 = UI.Theme.Text,
+        PlaceholderText = placeholder or "",
+        PlaceholderColor3 = UI.Theme.SubText,
+        Text = tostring(Flags[key] or ""),
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ClearTextOnFocus = false,
+    }, row)
+    UI.Corner(box, 7)
+    UI.Padding(box, 8, 8, 0, 0)
+    box.FocusLost:Connect(function()
+        Flags[key] = box.Text
+        if cb then cb(box.Text) end
+    end)
+    UI.Elements[key] = { set = function(v) box.Text = tostring(v); Flags[key] = v end }
+    return row
+end
+
+-- ---------- Keybind ----------
+function UI:Keybind(parent, label, key, cb)
+    local row = UI.New("Frame", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 26),
+    }, parent)
+    local txt = UI.New("TextLabel", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, -80, 1, 0),
+        Font = UI.Theme.Font, TextSize = 12,
+        TextColor3 = UI.Theme.Text,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Text = label,
+    }, row)
+    local btn = UI.New("TextButton", {
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, 0, 0.5, 0),
+        Size = UDim2.new(0, 70, 0, 22),
+        BackgroundColor3 = UI.Theme.Surface2,
+        Font = UI.Theme.FontBold, TextSize = 11,
+        TextColor3 = UI.Theme.Accent2,
+        Text = tostring(Flags[key] or "None"),
+        AutoButtonColor = false,
+    }, row)
+    UI.Corner(btn, 6)
+
+    local listening = false
+    btn.MouseButton1Click:Connect(function()
+        listening = true
+        btn.Text = "..."
+    end)
+    UIS.InputBegan:Connect(function(i, gp)
+        if gp or not listening then return end
+        if i.UserInputType ~= Enum.UserInputType.Keyboard then return end
+        listening = false
+        Flags[key] = i.KeyCode.Name
+        btn.Text = i.KeyCode.Name
+        if cb then cb(i.KeyCode) end
+    end)
+    UI.Elements[key] = { set = function(v) btn.Text = tostring(v); Flags[key] = v end }
+    return row
+end
+
+-- ---------- Label / Divider ----------
+function UI:Label(parent, text, color)
+    return UI.New("TextLabel", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        Font = UI.Theme.Font, TextSize = 11,
+        TextWrapped = true,
+        TextColor3 = color or UI.Theme.SubText,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Text = text,
+    }, parent)
+end
+
+function UI:Divider(parent)
+    return UI.New("Frame", {
+        Size = UDim2.new(1, 0, 0, 1),
+        BackgroundColor3 = UI.Theme.Stroke,
+        BorderSizePixel = 0,
+    }, parent)
+end
+
+--=====================================================================
+-- 6) API DO JOGO (ovos, prompts, bases, remotes)
+--=====================================================================
+do
+    Egg.RarityOrder = {
+        "Comum", "Incomum", "Raro", "Épico", "Lendário",
+        "Mítico", "Cósmico", "Secreto", "Eterno", "Divino",
+    }
+    Egg.RarityKeywords = {
+        { "divine", "Divino" }, { "eternal", "Eterno" }, { "secret", "Secreto" },
+        { "cosmic", "Cósmico" }, { "mythic", "Mítico" }, { "legendary", "Lendário" },
+        { "epic", "Épico" }, { "rare", "Raro" }, { "uncommon", "Incomum" },
+    }
+    Egg.MutationKeywords = {
+        { "spiritbloom", "Spirit Bloom", 3.0 }, { "rainbow", "Rainbow", 2.5 },
+        { "golden", "Golden", 2.0 }, { "bloom", "Bloom", 1.5 },
+        { "silver", "Silver", 1.25 }, { "scrambled", "Scrambled", 1.2 },
+        { "fractured", "Fractured", 1.15 }, { "monstrous", "Monstrous", 1.1 },
+    }
+    Egg.Cache = { eggs = {}, prompts = {}, at = 0 }
+
+    function Egg.Container()
+        return WS:FindFirstChild("AreaEggSlotsClient")
+    end
+
+    function Egg.PromptPart()
+        return WS:FindFirstChild("SmartPromptPart")
+    end
+
+    -- marca se o ovo está no nosso plot / na mão de alguém
+    local function ownedInfo(obj)
+        local plot = WS:FindFirstChild("Plots")
+        if plot then
+            local anc = obj
+            for _ = 1, 6 do
+                if not anc or anc == WS then break end
+                if anc.Parent == plot then
+                    local owner = anc:GetAttribute("Owner") or anc.Name
+                    return owner == LP.Name or owner == LP.DisplayName
+                end
+                anc = anc.Parent
+            end
+        end
+        local anc = obj
+        for _ = 1, 5 do
+            if not anc or anc == WS then break end
+            local hum = anc:FindFirstChildOfClass("Humanoid")
+            if hum then
+                local plr = Services.Players:GetPlayerFromCharacter(anc)
+                if plr then return plr == LP, plr end
+            end
+            anc = anc.Parent
+        end
+        return false, nil
+    end
+
+    -- extrai nome/raridade/mutação do ovo a partir de várias fontes
+    function Egg.ReadInfo(obj)
+        local names, attrs = {}, {}
+        local function collect(o, depth)
+            if not o or depth > 3 then return end
+            names[#names + 1] = o.Name
+            for k, v in pairs(o:GetAttributes()) do
+                if type(v) == "string" then attrs[#attrs + 1] = k .. "=" .. v end
+            end
+            for _, c in ipairs(o:GetChildren()) do
+                if c:IsA("ValueBase") and type(c.Value) == "string" then
+                    attrs[#attrs + 1] = c.Value
+                end
+                if c:IsA("BasePart") or c:IsA("Model") then collect(c, depth + 1) end
+            end
+        end
+        collect(obj, 0)
+
+        local blob = table.concat(names, " ") .. " " .. table.concat(attrs, " "):lower()
+        local blobLow = blob:lower()
+
+        local rarity, petName, income, mutation, mult = "Comum", nil, 0, nil, 1
+
+        for _, k in ipairs(Egg.RarityKeywords) do
+            if blobLow:find(k[1], 1, true) then rarity = k[2] break end
+        end
+        for _, k in ipairs(Egg.MutationKeywords) do
+            if blobLow:find(k[1], 1, true) then
+                mutation, mult = k[2], k[3]
+                break
+            end
+        end
+
+        -- pet: primeiro token com capitalização tipo CamelCase
+        for _, n in ipairs(names) do
+            local clean = n:gsub("Egg", ""):gsub("_", ""):gsub("-", ""):gsub("%s+", "")
+            if clean ~= "" and clean:match("^%u") and #clean > 2 then
+                petName = n
+                break
+            end
+        end
+        for _, a in ipairs(attrs) do
+            local v = a:match("^PetName=(.+)$")
+            if v then petName = v break end
+            local i = a:match("^Income=(%d+)")
+            if i then income = tonumber(i) end
+        end
+
+        local isEgg = obj:FindFirstChild("Hitbox") ~= nil
+            or obj.Name:lower():find("egg", 1, true) ~= nil
+            or obj:FindFirstChild("Plane") ~= nil
+            or obj:FindFirstChild("RareAreaEggHighlight") ~= nil
+            or obj:FindFirstChild("MonsterParasiteVisual") ~= nil
+
+        local owned, holder = ownedInfo(obj)
+        return {
+            obj = obj, isEgg = isEgg, rarity = rarity, pet = petName or obj.Name,
+            income = income, mutation = mutation, mult = mult,
+            owned = owned, holder = holder,
+            pos = (obj:IsA("BasePart") and obj.Position)
+                or (obj:FindFirstChild("Hitbox") and obj.Hitbox.Position)
+                or nil,
+        }
+    end
+
+    function Egg.Scan(force)
+        local now = os.clock()
+        if not force and now - Egg.Cache.at < 0.5 then return Egg.Cache.eggs end
+        Egg.Cache.at = now
+
+        local out, prompts = {}, {}
+        local container = Egg.Container()
+
+        if container then
+            for _, slot in ipairs(container:GetChildren()) do
+                local target = slot:FindFirstChild("Plane")
+                    or slot:FindFirstChild("Hitbox")
+                    or (slot:IsA("BasePart") and slot)
+                    or slot:FindFirstChildWhichIsA("BasePart")
+                if target then
+                    local info = Egg.ReadInfo(target)
+                    info.slot = slot
+                    out[#out + 1] = info
+                end
+            end
+        end
+
+        -- ovos de evento / soltos
+        for _, o in ipairs(WS:GetChildren()) do
+            if (o:IsA("Model") or o:IsA("BasePart"))
+            and (o.Name:lower():find("egg", 1, true) or o:FindFirstChild("Hitbox")) then
+                local info = Egg.ReadInfo(o)
+                info.pos = info.pos or (o:IsA("BasePart") and o.Position)
+                if info.pos then out[#out + 1] = info end
+            end
+        end
+
+        local pp = Egg.PromptPart()
+        if pp then
+            for _, p in ipairs(pp:GetChildren()) do
+                if p:IsA("ProximityPrompt") and p.Enabled then
+                    prompts[#prompts + 1] = p
+                end
+            end
+        end
+
+        Egg.Cache.eggs, Egg.Cache.prompts = out, prompts
+        return out
+    end
+
+    function Egg.Rank(rarity)
+        for i, r in ipairs(Egg.RarityOrder) do
+            if r == rarity then return i end
+        end
+        return 1
+    end
+
+    function Egg.Best(minRarity, maxDist)
+        local me = Util.Root(LP)
+        local min = Egg.Rank(minRarity or "Comum")
+        local best, bestScore
+        for _, e in ipairs(Egg.Scan()) do
+            if e.isEgg and e.pos and not (Flags.Egg_SkipOwnBase and e.owned) then
+                local okRar = Egg.Rank(e.rarity) >= min
+                local okInc = (e.income or 0) >= (Flags.Egg_IncomeMin or 0)
+                local d = me and Util.Dist(me.Position, e.pos) or 0
+                if okRar and okInc and d <= (maxDist or Flags.Egg_MaxDist) then
+                    local score = (Flags.Egg_MutationPriority and e.mult or 1) * 1000
+                        + Egg.Rank(e.rarity) * 100 - d / 100
+                    if not bestScore or score > bestScore then
+                        best, bestScore = e, score
+                    end
+                end
+            end
+        end
+        return best
+    end
+
+    -- dispara o prompt do ovo
+    function Egg.FirePrompt(prompt)
+        pcall(function() prompt.HoldDuration = 0 end)
+        pcall(function() prompt.MaxActivationDistance = 100 end)
+        if type(fireproximityprompt) == "function" then
+            local ok = pcall(fireproximityprompt, prompt, 0)
+            if ok then return true end
+        end
+        local ok = pcall(function()
+            prompt:InputHoldBegin()
+            task.wait(0.05)
+            prompt:InputHoldEnd()
+        end)
+        return ok
+    end
+
+    function Egg.PromptsNear(pos, radius)
+        local out = {}
+        for _, p in ipairs(Egg.Cache.prompts) do
+            local a = p.Parent
+            if a and a:IsA("BasePart") and Util.Dist(a.Position, pos) <= radius then
+                out[#out + 1] = p
+            end
+        end
+        return out
+    end
+end
+
+--=====================================================================
+-- 7) MOVIMENTAÇÃO (fly / speed / tp suave)
+--=====================================================================
+do
+    State.FlyBV, State.FlyBG = nil, nil
+    State.NoClipConn = nil
+
+    function PlayerMod.SetSpeed(v)
+        local h = Util.Hum(LP)
+        if h then h.WalkSpeed = v end
+    end
+
+    function PlayerMod.Teleport(pos, speed)
+        local root = Util.Root(LP)
+        if not root or not pos then return false end
+        speed = speed or Flags.Egg_StealSpeed or 120
+        local dist = Util.Dist(root.Position, pos)
+        if dist <= 8 then
+            root.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
+            return true
+        end
+        local dir = (pos - root.Position).Unit
+        local steps = math.ceil(dist / math.max(speed * 0.1, 4))
+        for i = 1, steps do
+            if not root or not root.Parent then return false end
+            root.CFrame = root.CFrame + dir * (dist / steps)
+            Run.Heartbeat:Wait()
+        end
+        return true
+    end
+
+    function PlayerMod.StopFly()
+        local root = Util.Root(LP)
+        if root then
+            for _, n in ipairs({ "VH_FlyBV", "VH_FlyBG" }) do
+                local o = root:FindFirstChild(n)
+                if o then o:Destroy() end
+            end
+        end
+    end
+
+    function PlayerMod.StartFly()
+        local root = Util.Root(LP)
+        if not root then return end
+        PlayerMod.StopFly()
+        local bv = Instance.new("BodyVelocity")
+        bv.Name = "VH_FlyBV"
+        bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+        bv.Velocity = Vector3.zero
+        bv.Parent = root
+        local bg = Instance.new("BodyGyro")
+        bg.Name = "VH_FlyBG"
+        bg.MaxTorque = Vector3.new(1e5, 1e5, 1e5)
+        bg.P = 1500
+        bg.Parent = root
+        State.FlyBV, State.FlyBG = bv, bg
+    end
+
+    function PlayerMod.FlyLoop()
+        Run.RenderStepped:Connect(function()
+            if not Flags.Plr_Fly then return end
+            local root, cam = Util.Root(LP), Services.Cam
+            if not root or not cam then return end
+            local bv, bg = State.FlyBV, State.FlyBG
+            if not bv or not bv.Parent then PlayerMod.StartFly() return end
+            bg.CFrame = cam.CFrame
+            local move = Vector3.zero
+            local sp = Flags.Plr_FlySpeed
+            if UIS:IsKeyDown(Enum.KeyCode.W) then move += cam.CFrame.LookVector end
+            if UIS:IsKeyDown(Enum.KeyCode.S) then move -= cam.CFrame.LookVector end
+            if UIS:IsKeyDown(Enum.KeyCode.A) then move -= cam.CFrame.RightVector end
+            if UIS:IsKeyDown(Enum.KeyCode.D) then move += cam.CFrame.RightVector end
+            if UIS:IsKeyDown(Enum.KeyCode.Space) then move += Vector3.new(0, 1, 0) end
+            if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then move -= Vector3.new(0, 1, 0) end
+            if move.Magnitude > 0 then move = move.Unit * sp end
+            bv.Velocity = move
+        end)
+    end
+
+    function PlayerMod.SetNoClip(on)
+        if on and not State.NoClipConn then
+            State.NoClipConn = Run.Stepped:Connect(function()
+                if not Flags.Plr_Noclip then return end
+                local c = Util.Char(LP)
+                if not c then return end
+                for _, p in ipairs(c:GetDescendants()) do
+                    if p:IsA("BasePart") and p.CanCollide then p.CanCollide = false end
+                end
+            end)
+        elseif not on and State.NoClipConn then
+            State.NoClipConn:Disconnect()
+            State.NoClipConn = nil
+        end
+    end
+
+    function PlayerMod.Reset()
+        local h = Util.Hum(LP)
+        if h then h.Health = 0 end
+    end
+end
+
+--=====================================================================
+-- 8) AIMBOT / SILENT AIM
+--=====================================================================
+do
+    Combat.Target = nil
+    Combat.LastRemote = nil
+
+    local function visible(part)
+        if not Flags.Aim_VisCheck then return true end
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances = { LP.Character }
+        local res = WS:Raycast(Services.Cam.CFrame.Position,
+            (part.Position - Services.Cam.CFrame.Position), params)
+        return res and (res.Instance:IsDescendantOf(part.Parent) or res.Instance == part)
+    end
+
+    local function boneOf(char)
+        local b = Flags.Aim_Bone
+        if b == "Nearest" then
+            local best, bd
+            for _, n in ipairs({ "Head", "HumanoidRootPart", "UpperTorso", "Torso" }) do
+                local p = char:FindFirstChild(n)
+                if p then
+                    local d = Util.Dist(Services.Cam.CFrame.Position, p.Position)
+                    if not bd or d < bd then best, bd = p, d end
+                end
+            end
+            return best
+        end
+        return char:FindFirstChild(b) or char:FindFirstChild("HumanoidRootPart")
+    end
+
+    function Combat.InFov(worldPos, radius)
+        local cam = Services.Cam
+        local sp = cam:WorldToViewportPoint(worldPos)
+        if sp.Z <= 0 then return false end
+        local center = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
+        local diff = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+        return diff <= radius
+    end
+
+    function Combat.PickTarget()
+        local cam = Services.Cam
+        local best, bestScore
+        local targets = Flags.Aim_Targets
+
+        local function consider(pos, obj, kind)
+            if not pos then return end
+            if not Combat.InFov(pos, Flags.Aim_Fov * (cam.ViewportSize.Y / 720)) then return end
+            local d = Util.Dist(cam.CFrame.Position, pos)
+            if d > Flags.Aim_MaxDist then return end
+            local score = -d
+            if Flags.Aim_Priority == "Menor vida" and kind == "player" then
+                local h = obj.Character and obj.Character:FindFirstChildOfClass("Humanoid")
+                if h then score = -h.Health end
+            elseif Flags.Aim_Priority == "FOV" then
+                local sp = cam:WorldToViewportPoint(pos)
+                local center = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
+                score = -(Vector2.new(sp.X, sp.Y) - center).Magnitude
+            end
+            if not bestScore or score > bestScore then
+                best, bestScore = { part = obj, pos = pos, kind = kind }, score
+            end
+        end
+
+        local includePlayers = false
+        local includeEggs = Flags.Aim_LockEgg
+        for _, t in ipairs(targets) do
+            if t == "Players" then includePlayers = true end
+            if t == "Ovos" then includeEggs = true end
+        end
+
+        if includePlayers then
+            for _, p in ipairs(Util.PlayersList(true)) do
+                local char = Util.Char(p)
+                if char then
+                    if Flags.Aim_TeamCheck and p.Team and LP.Team and p.Team == LP.Team then
+                        -- segue
+                    else
+                        local part = boneOf(char)
+                        if part and visible(part) then
+                            consider(part.Position, p, "player")
+                        end
+                    end
+                end
+            end
+        end
+
+        if includeEggs then
+            for _, e in ipairs(Egg.Scan()) do
+                if e.pos then consider(e.pos, e.obj, "egg") end
+            end
+        end
+
+        Combat.Target = best
+        return best
+    end
+
+    function Combat.AimStep()
+        if not Flags.Aim_Enabled then return end
+        local target = Combat.PickTarget()
+        if not target then return end
+
+        local cam = Services.Cam
+        local pos = target.pos
+        if Flags.Aim_Prediction > 0 and target.kind == "player" then
+            local root = Util.Root(target.part)
+            if root then pos = pos + root.Velocity * Flags.Aim_Prediction end
+        end
+
+        local goal = CFrame.new(cam.CFrame.Position, pos)
+        local a = 1 - Flags.Aim_Smooth
+        cam.CFrame = cam.CFrame:Lerp(goal, Util.Clamp(a, 0.02, 1))
+    end
+
+    -- -------- Silent Aim: hook no __namecall --------
+    function Combat.InstallSilent()
+        local mt = getrawmetatable(game)
+        if not mt then return end
+        local old = mt.__namecall
+        setreadonly(mt, false)
+        mt.__namecall = newcclosure(function(self, ...)
+            local method = getnamecallmethod()
+            if Flags.Silent_Enabled and (method == "FireServer" or method == "InvokeServer") then
+                if Flags.Silent_HitChance >= 100 or math.random(1, 100) <= Flags.Silent_HitChance then
+                    local t = Combat.Target or Combat.PickTarget()
+                    if t then
+                        local args = { ... }
+                        local replaced = false
+                        for i, v in ipairs(args) do
+                            if typeof(v) == "Vector3" then
+                                args[i] = t.pos
+                                replaced = true
+                            elseif typeof(v) == "CFrame" then
+                                args[i] = CFrame.new(Services.Cam.CFrame.Position, t.pos)
+                                replaced = true
+                            end
+                        end
+                        if replaced then
+                            Combat.LastRemote = self
+                            if Flags.Silent_Debug then
+                                print("[VeniceHub][Silent]", self.Name, method)
+                            end
+                            return old(self, table.unpack(args))
+                        end
+                    end
+                end
+            end
+            return old(self, ...)
+        end)
+        setreadonly(mt, true)
+        Notify.Push("Silent Aim", "Hook de rede instalado.", 3, "ok")
+    end
+end
+
+--=====================================================================
+-- 9) ESP + FOV VISUAL
+--=====================================================================
+do
+    Visuals.Objects = {}
+    Visuals.FovGui = nil
+    Visuals.Drawing = Util.HasDrawing()
+
+    local function getContainer(obj)
+        if Visuals.Objects[obj] then return Visuals.Objects[obj] end
+        local t = { drawings = {}, highlight = nil, billboard = nil, conns = {} }
+        Visuals.Objects[obj] = t
+        return t
+    end
+
+    local function clear(obj)
+        local t = Visuals.Objects[obj]
+        if not t then return end
+        for _, d in ipairs(t.drawings) do pcall(function() d:Remove() end) end
+        if t.highlight then t.highlight:Destroy() end
+        if t.billboard then t.billboard:Destroy() end
+        for _, c in ipairs(t.conns) do pcall(function() c:Disconnect() end) end
+        Visuals.Objects[obj] = nil
+    end
+
+    function Visuals.MakeDraw(part)
+        if not Visuals.Drawing then return nil end
+        local t = getContainer(part)
+        local function nd()
+            local d = Drawing.new("Square")
+            d.Visible = false
+            d.Thickness = 1
+            d.Filled = false
+            t.drawings[#t.drawings + 1] = d
+            return d
+        end
+        if not t.box then
+            t.box = nd()
+            t.name = Drawing.new("Text")
+            t.dist = Drawing.new("Text")
+            t.tracer = Drawing.new("Line")
+            t.drawings[#t.drawings + 1] = t.name
+            t.drawings[#t.drawings + 1] = t.dist
+            t.drawings[#t.drawings + 1] = t.tracer
+        end
+        return t
+    end
+
+    local function renderPlayer(p)
+        local char = Util.Char(p)
+        if not char then return end
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        local head = char:FindFirstChild("Head")
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not hrp or not head or not hum then return end
+
+        local dist = Util.Dist(Services.Cam.CFrame.Position, hrp.Position)
+        if dist > Flags.Esp_MaxDist then
+            local t = Visuals.Objects[hrp]
+            if t then for _, d in ipairs(t.drawings) do d.Visible = false end
+                if t.highlight then t.highlight.Enabled = false end
+                if t.billboard then t.billboard.Enabled = false end
+            end
+            return
+        end
+
+        local col = Flags.Esp_BoxColor
+        if Flags.Esp_TeamColor and p.Team then col = p.Team.TeamColor.Color end
+
+        local t = Visuals.MakeDraw(hrp)
+        if t and t.box then
+            local top = head.Position + Vector3.new(0, 0.6, 0)
+            local bottom = hrp.Position - Vector3.new(0, 3, 0)
+            local tS = Services.Cam:WorldToViewportPoint(top)
+            local bS = Services.Cam:WorldToViewportPoint(bottom)
+            if tS.Z > 0 and bS.Z > 0 then
+                local h = math.abs(tS.Y - bS.Y)
+                local w = h * 0.62
+                t.box.Size = Vector2.new(w, h)
+                t.box.Position = Vector2.new(tS.X - w / 2, tS.Y)
+                t.box.Color = col
+                t.box.Visible = Flags.Esp_Enabled and Flags.Esp_Box
+
+                t.name.Text = p.DisplayName .. " (@" .. p.Name .. ")"
+                t.name.Position = Vector2.new(tS.X, tS.Y - 15)
+                t.name.Color = col
+                t.name.Size = Flags.Esp_TextSize
+                t.name.Center = true
+                t.name.Visible = Flags.Esp_Enabled and Flags.Esp_Name
+
+                t.dist.Text = string.format("%dm", math.floor(dist))
+                t.dist.Position = Vector2.new(tS.X, bS.Y + 2)
+                t.dist.Color = Color3.new(1, 1, 1)
+                t.dist.Size = Flags.Esp_TextSize - 1
+                t.dist.Center = true
+                t.dist.Visible = Flags.Esp_Enabled and Flags.Esp_Dist
+
+                local origin = Vector2.new(Services.Cam.ViewportSize.X / 2, Services.Cam.ViewportSize.Y)
+                if Flags.Esp_TracerFrom == "Mouse" then
+                    origin = Vector2.new(UIS:GetMouseLocation().X, UIS:GetMouseLocation().Y)
+                end
+                t.tracer.From = origin
+                t.tracer.To = Vector2.new(tS.X, bS.Y)
+                t.tracer.Color = col
+                t.tracer.Visible = Flags.Esp_Enabled and Flags.Esp_Tracer
+            end
+        end
+
+        if Flags.Esp_Chams then
+            local tt = getContainer(hrp)
+            if not tt.highlight then
+                local h = Instance.new("Highlight")
+                h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                h.FillTransparency = 0.6
+                h.Parent = char
+                tt.highlight = h
+            end
+            tt.highlight.Enabled = true
+            tt.highlight.FillColor = col
+            tt.highlight.OutlineColor = col
+        else
+            local tt = Visuals.Objects[hrp]
+            if tt and tt.highlight then tt.highlight.Enabled = false end
+        end
+
+        if Flags.Esp_Health and hum then
+            local tt = getContainer(hrp)
+            if not tt.billboard then
+                local bb = Instance.new("BillboardGui")
+                bb.Size = UDim2.new(0, 46, 0, 10)
+                bb.StudsOffsetWorldSpace = Vector3.new(0, 3.2, 0)
+                bb.AlwaysOnTop = true
+                bb.Parent = char
+                local bar = Instance.new("Frame")
+                bar.Size = UDim2.new(1, 0, 1, 0)
+                bar.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+                bar.Parent = bb
+                UI.Corner(bar, 3)
+                local fill = Instance.new("Frame")
+                fill.Name = "Fill"
+                fill.Size = UDim2.new(1, 0, 1, 0)
+                fill.BackgroundColor3 = UI.Theme.Good
+                fill.Parent = bar
+                UI.Corner(fill, 3)
+                tt.billboard = bb
+            end
+            local fill = tt.billboard:FindFirstChild("Fill", true)
+            if fill then
+                fill.Size = UDim2.new(Util.Clamp(hum.Health / hum.MaxHealth, 0, 1), 0, 1, 0)
+                fill.BackgroundColor3 = Color3.fromRGB(
+                    255 * (1 - hum.Health / hum.MaxHealth),
+                    255 * (hum.Health / hum.MaxHealth), 90)
+            end
+        end
+    end
+
+    local function renderEgg(e)
+        if not Flags.Esp_Eggs or not e.pos then return end
+        local dist = Util.Dist(Services.Cam.CFrame.Position, e.pos)
+        if dist > Flags.Esp_MaxDist then return end
+        local part = e.obj:IsA("BasePart") and e.obj or e.obj:FindFirstChildWhichIsA("BasePart")
+        if not part then return end
+        local t = Visuals.MakeDraw(part)
+        if not t or not t.box then return end
+
+        local s = Services.Cam:WorldToViewportPoint(e.pos)
+        if s.Z <= 0 then return end
+        t.box.Size = Vector2.new(26, 26)
+        t.box.Position = Vector2.new(s.X - 13, s.Y - 13)
+        t.box.Color = Flags.Esp_EggColor
+        t.box.Visible = true
+
+        local label = e.pet
+        if Flags.Esp_EggRarity then label ..= " [" .. e.rarity .. "]" end
+        if Flags.Esp_EggMutation and e.mutation then label ..= " {" .. e.mutation .. "}" end
+        if Flags.Esp_EggIncome and e.income > 0 then
+            label ..= " $" .. Util.Format(e.income) .. "/s"
+        end
+        if e.owned then label ..= " (minha base)" end
+        label ..= " " .. math.floor(dist) .. "m"
+
+        t.name.Text = label
+        t.name.Position = Vector2.new(s.X, s.Y - 22)
+        t.name.Color = Flags.Esp_EggColor
+        t.name.Size = Flags.Esp_TextSize
+        t.name.Center = true
+        t.name.Visible = true
+        t.dist.Visible = false
+        t.tracer.Visible = false
+    end
+
+    function Visuals.Loop()
+        Run.RenderStepped:Connect(function()
+            if not Flags.Esp_Enabled then
+                for _, t in pairs(Visuals.Objects) do
+                    for _, d in ipairs(t.drawings) do d.Visible = false end
+                    if t.highlight then t.highlight.Enabled = false end
+                    if t.billboard then t.billboard.Enabled = false end
+                end
+                return
+            end
+            for _, p in ipairs(Util.PlayersList(true)) do renderPlayer(p) end
+            for _, e in ipairs(Egg.Scan()) do renderEgg(e) end
+        end)
+    end
+
+    -- FOV circle
+    function Visuals.BuildFov()
+        local gui = UI.New("ScreenGui", {
+            Name = "VH_Fov", ResetOnSpawn = false, IgnoreGuiInset = true,
+        }, (gethui and gethui()) or LP:WaitForChild("PlayerGui"))
+        local circle = UI.New("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            BackgroundTransparency = 1,
+            Size = UDim2.new(0, 180, 0, 180),
+        }, gui)
+        local stroke = UI.Stroke(circle, Flags.Fov_Color, Flags.Fov_Thickness, 0.2)
+        UI.Corner(circle, 999)
+
+        Run.RenderStepped:Connect(function()
+            circle.Visible = Flags.Fov_Enabled and Flags.Esp_Enabled or Flags.Fov_Enabled
+            local d = Flags.Fov_Radius * 2 * (Services.Cam.ViewportSize.Y / 720)
+            circle.Size = UDim2.new(0, d, 0, d)
+            stroke.Color = Flags.Fov_Color
+            stroke.Thickness = Flags.Fov_Thickness
+            stroke.Transparency = 1 - Flags.Fov_Transparency
+            circle.BackgroundTransparency = Flags.Fov_Filled and (1 - Flags.Fov_Transparency) or 1
+            circle.BackgroundColor3 = Flags.Fov_Color
+        end)
+    end
+end
+
+--=====================================================================
+-- 10) EGG: TELEPORTE / PEGAR / VOLTAR PARA BASE
+--=====================================================================
+do
+    function Egg.MyBasePos()
+        local plots = WS:FindFirstChild("Plots")
+        if not plots then return nil end
+        for _, pl in ipairs(plots:GetChildren()) do
+            local owner = pl:GetAttribute("Owner") or pl.Name
+            if owner == LP.Name or owner == LP.DisplayName
+            or (LP:GetAttribute("Plot") and LP:GetAttribute("Plot") == pl.Name) then
+                local base = pl:FindFirstChildWhichIsA("BasePart")
+                    or pl:FindFirstChild("Base")
+                if base then return base.Position end
+                return pl:GetPivot().Position
+            end
+        end
+        -- fallback: spawn
+        local sp = WS:FindFirstChildOfClass("SpawnLocation")
+        return sp and sp.Position or nil
+    end
+
+    function Egg.TpToEgg(info)
+        if not info or not info.pos then return false end
+        return PlayerMod.Teleport(info.pos, Flags.Egg_StealSpeed)
+    end
+
+    function Egg.Grab(info)
+        if not info then return false end
+        local target = info.pos
+        if not target then return false end
+
+        for _ = 1, Flags.Egg_Retries do
+            PlayerMod.Teleport(target, Flags.Egg_StealSpeed)
+            task.wait(0.05)
+
+            if Flags.Egg_UsePrompt then
+                local pp = Egg.PromptPart()
+                if pp then
+                    for _, p in ipairs(pp:GetChildren()) do
+                        if p:IsA("ProximityPrompt") and p.Enabled then
+                            local a = p.Parent
+                            if a and a:IsA("BasePart") and Util.Dist(a.Position, target) <= Flags.Egg_ApproachDist + 4 then
+                                Egg.FirePrompt(p)
+                            end
+                        end
+                    end
+                end
+            end
+
+            if Flags.Egg_UseTouch then
+                local root = Util.Root(LP)
+                local part = info.obj:IsA("BasePart") and info.obj
+                    or info.obj:FindFirstChildWhichIsA("BasePart")
+                if root and part then
+                    firetouchinterest(root, part, 0)
+                    task.wait()
+                    firetouchinterest(root, part, 1)
+                end
+            end
+
+            if Flags.Egg_UseRemote and Combat.LastRemote then
+                pcall(function()
+                    Combat.LastRemote:FireServer("Grab", info.obj)
+                end)
+            end
+
+            task.wait(Flags.Egg_StealDelay)
+            if not Flags.Egg_Verify then return true end
+
+            -- verifica se o ovo saiu do slot
+            if info.slot and not info.slot.Parent then return true end
+            local c = Util.Char(LP)
+            if c then
+                for _, d in ipairs(c:GetDescendants()) do
+                    if d:IsA("BasePart") and d:FindFirstChild("Hitbox") then return true end
+                end
+            end
+        end
+        return false
+    end
+
+    function Egg.ReturnBase()
+        local base = Egg.MyBasePos()
+        if not base then
+            Notify.Push("Base", "Base não encontrada.", 3, "warn")
+            return false
+        end
+        PlayerMod.Teleport(base, Flags.Egg_ReturnSpeed)
+        if Flags.Egg_AutoDeposit then
+            task.wait(0.15)
+            local pp = Egg.PromptPart()
+            if pp then
+                for _, p in ipairs(pp:GetChildren()) do
+                    if p:IsA("ProximityPrompt") and p.Enabled then
+                        local a = p.Parent
+                        if a and a:IsA("BasePart") and Util.Dist(a.Position, base) <= 40 then
+                            Egg.FirePrompt(p)
+                        end
+                    end
+                end
+            end
+        end
+        return true
+    end
+
+    function Egg.StealLoop()
+        task.spawn(function()
+            while task.wait(0.2) do
+                if not Flags.Egg_AutoSteal then continue end
+                local info = Egg.Best(Flags.Egg_RarityMin, Flags.Egg_MaxDist)
+                if not info then continue end
+                State.CurrentEgg = info
+                local ok = Egg.Grab(info)
+                if ok then
+                    State.Stolen = (State.Stolen or 0) + 1
+                    if Flags.Egg_AutoReturn then Egg.ReturnBase() end
+                end
+            end
+        end)
+    end
+end
+
+--=====================================================================
+-- 11) AUTO FARM (hatch, claim, treadmill, sell, upgrade)
+--=====================================================================
+do
+    local function fireAllPrompts(filter)
+        local pp = Egg.PromptPart()
+        if not pp then return 0 end
+        local n = 0
+        for _, p in ipairs(pp:GetChildren()) do
+            if p:IsA("ProximityPrompt") and p.Enabled then
+                local txt = (p.ActionText or ""):lower()
+                if not filter or txt:find(filter, 1, true) then
+                    Egg.FirePrompt(p)
+                    n += 1
+                end
+            end
+        end
+        return n
+    end
+
+    function Farm.PressAll()
+        local c = Util.Char(LP)
+        if not c then return end
+        for _, d in ipairs(c:GetDescendants()) do
+            if d:IsA("ProximityPrompt") then Egg.FirePrompt(d) end
+        end
+    end
+
+    function Farm.Loop()
+        task.spawn(function()
+            while task.wait(0.5) do
+                if not Flags.Farm_Enabled then continue end
+                local base = Egg.MyBasePos()
+                if base then
+                    local root = Util.Root(LP)
+                    if root and Util.Dist(root.Position, base) > 60 then
+                        PlayerMod.Teleport(base, 140)
+                    end
+                end
+
+                if Flags.Farm_Claim then
+                    fireAllPrompts("claim")
+                    fireAllPrompts("coletar")
+                end
+                if Flags.Farm_Hatch then
+                    fireAllPrompts("hatch")
+                    fireAllPrompts("chocar")
+                    Farm.PressAll()
+                end
+                if Flags.Farm_Sell then fireAllPrompts("sell") end
+                if Flags.Farm_Upgrade then fireAllPrompts("upgrade") end
+
+                task.wait(math.max(Flags.Farm_HatchDelay, 0.1))
+            end
+        end)
+    end
+
+    function Farm.Treadmill()
+        task.spawn(function()
+            while task.wait(1) do
+                if Flags.Farm_Enabled and Flags.Farm_Treadmill then
+                    Farm.PressAll()
+                end
+            end
+        end)
+    end
+end
+
+--=====================================================================
+-- 12) AUTO EVENTOS (ciclo de 30 min)
+--=====================================================================
+do
+    Events.Active = {}
+    Events.Keywords = {
+        { "scramble", "Dr. Scramble (Mecha)", "Event_DrScramble" },
+        { "drone", "Drones do Scramble", "Event_DrScramble" },
+        { "mecha", "Mecha Boss", "Event_DrScramble" },
+        { "rift", "Rift / Overlord", "Event_Rift" },
+        { "overlord", "Overlord", "Event_Rift" },
+        { "bloom", "Great Bloom (Sakura)", "Event_GreatBloom" },
+        { "sakura", "Sakura Crystal", "Event_GreatBloom" },
+        { "frog", "Hungry Frog / Parasita", "Event_HungryFrog" },
+        { "parasite", "Parasita", "Event_HungryFrog" },
+        { "pumpkin", "Halloween / Pumpkin King", "Event_Halloween" },
+        { "echo", "Echo / Phantom Express", "Event_Halloween" },
+        { "manor", "Manor Key", "Event_Halloween" },
+        { "candy", "Candy Corn", "Event_Halloween" },
+        { "nitro", "Nitro Race", "Event_NitroRace" },
+        { "race", "Corrida", "Event_NitroRace" },
+    }
+
+    function Events.Scan()
+        local found = {}
+        for _, o in ipairs(WS:GetChildren()) do
+            local low = o.Name:lower()
+            for _, k in ipairs(Events.Keywords) do
+                if low:find(k[1], 1, true) then
+                    local pos = (o:IsA("BasePart") and o.Position)
+                        or (o:IsA("Model") and o:GetPivot().Position)
+                    if pos then
+                        found[#found + 1] = { name = k[2], flag = k[3], pos = pos, obj = o }
+                    end
+                    break
+                end
+            end
+        end
+        Events.Active = found
+        return found
+    end
+
+    function Events.GoTo(e)
+        if not e or not e.pos then return end
+        PlayerMod.Teleport(e.pos, 200)
+    end
+
+    function Events.Loop()
+        task.spawn(function()
+            local lastAnnounce = {}
+            while task.wait(Flags.Event_ScanDelay) do
+                local list = Events.Scan()
+                if Flags.Event_Announce then
+                    for _, e in ipairs(list) do
+                        if not lastAnnounce[e.name]
+                        and os.clock() - (lastAnnounce[e.name .. "_t"] or 0) > 60 then
+                            lastAnnounce[e.name] = true
+                            lastAnnounce[e.name .. "_t"] = os.clock()
+                            Notify.Push("Evento ativo", e.name, 4, "warn")
+                        end
+                    end
+                end
+                if Flags.Event_Auto then
+                    local target
+                    for _, e in ipairs(list) do
+                        if Flags[e.flag] then target = e break end
+                    end
+                    if target and Flags.Event_Teleport then
+                        local root = Util.Root(LP)
+                        if root and Util.Dist(root.Position, target.pos) > 80 then
+                            Events.GoTo(target)
+                        end
+                    end
+                    Farm.PressAll()
+                end
+            end
+        end)
+    end
+end
+
+--=====================================================================
+-- 13) PLAYER: FLY / SPEED / ANTI-* / TPs
+--=====================================================================
+do
+    function PlayerMod.Hooks()
+        -- speed
+        Run.RenderStepped:Connect(function()
+            if Flags.Plr_SpeedEnabled then PlayerMod.SetSpeed(Flags.Plr_Speed) end
+        end)
+
+        -- pulo infinito
+        UIS.JumpRequest:Connect(function()
+            if not Flags.Plr_InfJump then return end
+            local h = Util.Hum(LP)
+            if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
+        end)
+
+        -- anti-ragdoll / anti-stun / anti-fall
+        Run.Heartbeat:Connect(function()
+            local c = Util.Char(LP)
+            if not c then return end
+            local h = c:FindFirstChildOfClass("Humanoid")
+            if not h then return end
+            if Flags.Plr_AntiRagdoll or Flags.Plr_AntiStun then
+                if h:GetState() == Enum.HumanoidStateType.Physics
+                or h:GetState() == Enum.HumanoidStateType.FallingDown then
+                    if Flags.Plr_AntiRagdoll then
+                        h:ChangeState(Enum.HumanoidStateType.Running)
+                    end
+                end
+            end
+            if Flags.Plr_NoFall then h:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false) end
+        end)
+
+        -- anti-guard / anti-trap: desvia e reposiciona
+        Run.Heartbeat:Connect(function()
+            local root = Util.Root(LP)
+            if not root then return end
+            if Flags.Plr_AntiGuard then
+                for _, p in ipairs(Util.PlayersList(true)) do
+                    local c = Util.Char(p)
+                    local h = c and c:FindFirstChild("HumanoidRootPart")
+                    if h and Util.Dist(root.Position, h.Position) < 4 then
+                        root.CFrame += (root.Position - h.Position).Unit * 0.4
+                    end
+                end
+            end
+        end)
+
+        -- anti-AFK
+        LP.Idled:Connect(function()
+            if not Flags.Plr_AntiAfk then return end
+            Services.VU:CaptureController()
+            Services.VU:ClickButton2(Vector2.new())
+        end)
+
+        -- fullbright / no fog
+        task.spawn(function()
+            local baseAmb, baseBright
+            while task.wait(1) do
+                if Flags.Plr_Fullbright then
+                    baseAmb = baseAmb or Services.Lighting.Ambient
+                    baseBright = baseBright or Services.Lighting.Brightness
+                    Services.Lighting.Ambient = Color3.fromRGB(178, 178, 178)
+                    Services.Lighting.Brightness = 3
+                    Services.Lighting.ClockTime = 14
+                else
+                    if baseAmb then Services.Lighting.Ambient = baseAmb end
+                    if baseBright then Services.Lighting.Brightness = baseBright end
+                end
+                if Flags.Plr_NoFog then
+                    Services.Lighting.FogEnd = 1e6
+                end
+            end
+        end)
+
+        -- anti-kick
+        task.spawn(function()
+            while task.wait(1) do
+                if Flags.Sys_AntiKick then
+                    pcall(function()
+                        Services.VU:CaptureController()
+                        Services.VU:ClickButton1(Vector2.new(0, 0))
+                    end)
+                end
+            end
+        end)
+
+        -- auto rejoin
+        Services.Players.PlayerRemoving:Connect(function(p)
+            if p ~= LP then return end
+            if Flags.Sys_AutoRejoin then
+                task.wait(3)
+                pcall(function() game:GetService("TeleportService"):Teleport(HUB.Place) end)
+            end
+        end)
+    end
+end
+
+--=====================================================================
+-- 14) SKIN COPIER (por ID ou Nick) — visível para todos
+--=====================================================================
+do
+    Skin.Cache = {}
+
+    function Skin.ExtractFrom(p)
+        local out = {}
+        local function scan(cont)
+            if not cont then return end
+            for _, o in ipairs(cont:GetDescendants()) do
+                local attrs = o:GetAttributes()
+                local id = attrs.SkinId or attrs.Skin or attrs.PetSkin
+                    or (o:FindFirstChild("SkinId") and o.SkinId.Value)
+                if id then
+                    out[#out + 1] = { pet = o.Name, skin = id, obj = o }
+                end
+            end
+        end
+        scan(p.Character)
+        scan(p:FindFirstChild("Backpack"))
+        scan(p:FindFirstChild("PlayerGui"))
+        return out
+    end
+
+    function Skin.CopyFrom(target, visibleToAll)
+        local p = typeof(target) == "Instance" and target or Util.ByNameOrId(target)
+        if not p then
+            Notify.Push("Skins", "Jogador não encontrado: " .. tostring(target), 4, "err")
+            return
+        end
+        local list = Skin.ExtractFrom(p)
+        if #list == 0 then
+            Notify.Push("Skins", "Nenhuma skin detectada em " .. p.Name, 4, "warn")
+            return
+        end
+        Skin.Cache[p.Name] = list
+
+        local applied = 0
+        for _, item in ipairs(list) do
+            local ok = pcall(function()
+                if visibleToAll then
+                    local remotes = RS:FindFirstChild("Packages")
+                        and RS.Packages:FindFirstChild("Networking")
+                    if remotes then
+                        for _, r in ipairs(remotes:GetDescendants()) do
+                            if r:IsA("RemoteEvent") and r.Name:lower():find("skin", 1, true) then
+                                r:FireServer("Equip", item.pet, item.skin)
+                            end
+                        end
+                    end
+                end
+            end)
+            if ok then applied += 1 end
+        end
+        Notify.Push("Skins", string.format("%d skin(s) copiada(s) de %s%s",
+            #list, p.Name, visibleToAll and " (público)" or " (local)"), 4, "ok")
+    end
+
+    function Skin.Loop()
+        task.spawn(function()
+            while task.wait(Flags.Skin_ScanDelay) do
+                if Flags.Skin_AutoApply and Flags.Skin_Target ~= "" then
+                    Skin.CopyFrom(Flags.Skin_Target, Flags.Skin_VisibleToAll)
+                end
+            end
+        end)
+    end
+end
+
+--=====================================================================
+-- 15) CONFIG: save / load / autosave / import / export
+--=====================================================================
+do
+    Cfg.Blacklist = {
+        Sys_UiKey = true, Sys_PanicKey = true,
+        Esp_BoxColor = true, Esp_EggColor = true, Fov_Color = true,
+    }
+
+    function Cfg.Serialize()
+        local out = {}
+        for k, v in pairs(Flags) do
+            if not Cfg.Blacklist[k] and type(v) ~= "function" and type(v) ~= "userdata" then
+                out[k] = v
+            end
+        end
+        return out
+    end
+
+    function Cfg.Apply(data)
+        local n = 0
+        for k, v in pairs(data) do
+            if Flags[k] ~= nil and UI.Elements[k] then
+                UI.Elements[k].set(v)
+                n += 1
+            end
+        end
+        Notify.Push("Config", n .. " opções aplicadas.", 3, "ok")
+    end
+
+    function Cfg.Save(slot)
+        slot = slot or "default"
+        if not Util.FileAPI() then
+            Util.Clipboard(Services.Http:JSONEncode(Cfg.Serialize()))
+            Notify.Push("Config", "Sem API de arquivo — JSON copiado.", 4, "warn")
+            return
+        end
+        if type(makefolder) == "function" then
+            pcall(makefolder, "VeniceHub")
+            pcall(makefolder, HUB.Folder)
+        end
+        local path = HUB.Folder .. "/" .. slot .. ".json"
+        pcall(writefile, path, Services.Http:JSONEncode(Cfg.Serialize()))
+        Notify.Push("Config", "Salvo em " .. slot, 3, "ok")
+    end
+
+    function Cfg.Load(slot)
+        slot = slot or "default"
+        if not Util.FileAPI() then return end
+        local path = HUB.Folder .. "/" .. slot .. ".json"
+        if not pcall(isfile, path) or not isfile(path) then
+            Notify.Push("Config", "Slot '" .. slot .. "' não existe.", 3, "warn")
+            return
+        end
+        local ok, data = pcall(function()
+            return Services.Http:JSONDecode(readfile(path))
+        end)
+        if ok and data then Cfg.Apply(data) else
+            Notify.Push("Config", "Falha ao ler config.", 3, "err")
+        end
+    end
+
+    function Cfg.Export()
+        local json = Services.Http:JSONEncode(Cfg.Serialize())
+        Util.Clipboard(json)
+        Notify.Push("Config", "Config exportada para a área de transferência.", 4, "ok")
+    end
+
+    function Cfg.Import()
+        local ok, data = pcall(function()
+            return Services.Http:JSONDecode(readfile(HUB.Folder .. "/import.json"))
+        end)
+        if ok and data then Cfg.Apply(data) end
+    end
+
+    function Cfg.AutoSave()
+        task.spawn(function()
+            while task.wait(Flags.Sys_AutoSaveInterval) do
+                if Flags.Sys_AutoSave then Cfg.Save("autosave") end
+            end
+        end)
+    end
+end
+
+--=====================================================================
+-- 16) CONSTRUÇÃO DO PAINEL
+--=====================================================================
+local function BuildPanel()
+    UI:Build()
+
+    -- ================= AIMBOT =================
+    local tAim = UI:Tab("Aimbot", "⚔️")
+    local s1 = UI:Section(tAim, "Geral")
+    UI:Toggle(s1.Body, "Ativar Aimbot", "Aim_Enabled")
+    UI:Keybind(s1.Body, "Tecla de ativação", "Aim_Key")
+    UI:Dropdown(s1.Body, "Modo", "Aim_Mode", { "Hold", "Toggle", "Always" })
+    UI:Dropdown(s1.Body, "Alvos", "Aim_Targets", { "Players", "Ovos", "NPCs" }, true)
+    UI:Dropdown(s1.Body, "Prioridade", "Aim_Priority", { "Distância", "FOV", "Menor vida" })
+
+    local s2 = UI:Section(tAim, "Mira")
+    UI:Dropdown(s2.Body, "Osso/Parte", "Aim_Bone", { "Head", "HumanoidRootPart", "UpperTorso", "Nearest" })
+    UI:Slider(s2.Body, "Suavidade", "Aim_Smooth", 0.02, 1, 2)
+    UI:Slider(s2.Body, "FOV (graus)", "Aim_Fov", 5, 360, 0)
+    UI:Slider(s2.Body, "Distância máx.", "Aim_MaxDist", 50, 2000, 0)
+    UI:Slider(s2.Body, "Predição (s)", "Aim_Prediction", 0, 0.5, 2)
+
+    local s3 = UI:Section(tAim, "Filtros")
+    UI:Toggle(s3.Body, "Checar time", "Aim_TeamCheck")
+    UI:Toggle(s3.Body, "Checar visibilidade", "Aim_VisCheck")
+    UI:Toggle(s3.Body, "Travar também em ovos", "Aim_LockEgg")
+
+    local s4 = UI:Section(tAim, "FOV Visual")
+    UI:Toggle(s4.Body, "Mostrar círculo de FOV", "Fov_Enabled")
+    UI:Slider(s4.Body, "Raio do círculo", "Fov_Radius", 10, 400, 0)
+    UI:Slider(s4.Body, "Espessura", "Fov_Thickness", 0.5, 5, 1)
+    UI:Slider(s4.Body, "Transparência", "Fov_Transparency", 0, 1, 2)
+    UI:Toggle(s4.Body, "Preenchido", "Fov_Filled")
+    UI:Button(s4.Body, "Sincronizar raio com o FOV do aimbot", function()
+        UI.Elements.Fov_Radius.set(Flags.Aim_Fov)
+    end)
+
+    -- ================= SILENT AIM =================
+    local tSil = UI:Tab("Silent Aim", "🎯")
+    local a1 = UI:Section(tSil, "Configuração")
+    UI:Toggle(a1.Body, "Ativar Silent Aim", "Silent_Enabled")
+    UI:Keybind(a1.Body, "Tecla de ativação", "Silent_Key")
+    UI:Dropdown(a1.Body, "Modo", "Silent_Mode", { "Camera", "Remoto (hook)", "Híbrido" })
+    UI:Dropdown(a1.Body, "Injeção", "Silent_RemoteMode", { "Inteligente", "Sempre", "Nunca" })
+    UI:Slider(a1.Body, "Chance de acerto (%)", "Silent_HitChance", 1, 100, 0)
+    UI:Slider(a1.Body, "FOV do silent", "Silent_Fov", 5, 360, 0)
+    UI:Slider(a1.Body, "Distância máx.", "Silent_Dist", 50, 2000, 0)
+
+    local a2 = UI:Section(tSil, "Diagnóstico")
+    UI:Toggle(a2.Body, "Debug no console (F9)", "Silent_Debug")
+    UI:Label(a2.Body, "O hook redireciona argumentos Vector3/CFrame das chamadas FireServer/InvokeServer para o alvo atual — útil para pegar ovos e acertar guardiões sem olhar exatamente para eles.")
+    UI:Button(a2.Body, "Reinstalar hook de rede", function() Combat.InstallSilent() end)
+
+    -- ================= ESP =================
+    local tEsp = UI:Tab("ESP", "👁")
+    local e1 = UI:Section(tEsp, "Módulos")
+    UI:Toggle(e1.Body, "Ativar ESP", "Esp_Enabled")
+    UI:Toggle(e1.Body, "Caixa", "Esp_Box")
+    UI:Toggle(e1.Body, "Nome + Nick", "Esp_Name")
+    UI:Toggle(e1.Body, "Distância", "Esp_Dist")
+    UI:Toggle(e1.Body, "Barra de vida", "Esp_Health")
+    UI:Toggle(e1.Body, "Linha (tracer)", "Esp_Tracer")
+    UI:Toggle(e1.Body, "Chams / Highlight", "Esp_Chams")
+    UI:Toggle(e1.Body, "Cor do time", "Esp_TeamColor")
+
+    local e2 = UI:Section(tEsp, "Ajustes")
+    UI:Slider(e2.Body, "Distância máx.", "Esp_MaxDist", 50, 3000, 0)
+    UI:Slider(e2.Body, "Tamanho do texto", "Esp_TextSize", 8, 22, 0)
+    UI:Dropdown(e2.Body, "Origem do tracer", "Esp_TracerFrom", { "Topo", "Mouse" })
+
+    local e3 = UI:Section(tEsp, "ESP de Ovos")
+    UI:Toggle(e3.Body, "Mostrar ovos", "Esp_Eggs")
+    UI:Toggle(e3.Body, "Mostrar raridade", "Esp_EggRarity")
+    UI:Toggle(e3.Body, "Mostrar mutação", "Esp_EggMutation")
+    UI:Toggle(e3.Body, "Mostrar $/s", "Esp_EggIncome")
+    UI:Toggle(e3.Body, "Incluir minha base", "Esp_OwnBase")
+    UI:Label(e3.Body, "Raridades: Comum → Incomum → Raro → Épico → Lendário → Mítico → Cósmico → Secreto → Eterno → Divino")
+
+    -- ================= OVO =================
+    local tEgg = UI:Tab("Ovo", "🥚")
+    local g1 = UI:Section(tEgg, "Ações rápidas")
+    UI:Button(g1.Body, "Teleportar para o melhor ovo", function()
+        local e = Egg.Best(Flags.Egg_RarityMin, Flags.Egg_MaxDist)
+        if e then Egg.TpToEgg(e); Notify.Push("Ovo", "Indo para: " .. e.pet, 2, "info")
+        else Notify.Push("Ovo", "Nenhum ovo válido encontrado.", 3, "warn") end
+    end)
+    UI:Button(g1.Body, "Pegar ovo (steal)", function()
+        local e = Egg.Best(Flags.Egg_RarityMin, Flags.Egg_MaxDist)
+        if e then
+            local ok = Egg.Grab(e)
+            Notify.Push("Ovo", ok and ("Pego: " .. e.pet) or "Falhou.", 3, ok and "ok" or "err")
+        end
+    end)
+    UI:Button(g1.Body, "Voltar para a base + depositar", function() Egg.ReturnBase() end, UI.Theme.Accent2)
+    UI:Button(g1.Body, "Rotina completa (ir → pegar → voltar)", function()
+        task.spawn(function()
+            local e = Egg.Best(Flags.Egg_RarityMin, Flags.Egg_MaxDist)
+            if e and Egg.Grab(e) then Egg.ReturnBase() end
+        end)
+    end)
+
+    local g2 = UI:Section(tEgg, "Auto Steal")
+    UI:Toggle(g2.Body, "Auto Steal", "Egg_AutoSteal")
+    UI:Toggle(g2.Body, "Voltar sozinho para a base", "Egg_AutoReturn")
+    UI:Toggle(g2.Body, "Depositar automaticamente", "Egg_AutoDeposit")
+    UI:Toggle(g2.Body, "Ignorar ovos na minha base", "Egg_SkipOwnBase")
+    UI:Toggle(g2.Body, "Verificar se pegou", "Egg_Verify")
+    UI:Toggle(g2.Body, "Priorizar mutações", "Egg_MutationPriority")
+
+    local g3 = UI:Section(tEgg, "Filtros e ajustes")
+    UI:Dropdown(g3.Body, "Raridade mínima", "Egg_RarityMin",
+        { "Comum", "Incomum", "Raro", "Épico", "Lendário", "Mítico", "Cósmico", "Secreto", "Eterno", "Divino" })
+    UI:Slider(g3.Body, "Income mínimo ($/s)", "Egg_IncomeMin", 0, 5e9, 0)
+    UI:Slider(g3.Body, "Distância máx. do ovo", "Egg_MaxDist", 50, 3000, 0)
+    UI:Slider(g3.Body, "Distância de aproximação", "Egg_ApproachDist", 2, 30, 0)
+    UI:Slider(g3.Body, "Velocidade do teleporte", "Egg_StealSpeed", 16, 1000, 0)
+    UI:Slider(g3.Body, "Tentativas por ovo", "Egg_Retries", 1, 12, 0)
+    UI:Slider(g3.Body, "Delay entre ações", "Egg_StealDelay", 0.05, 1, 2)
+    UI:Toggle(g3.Body, "Usar prompt (E)", "Egg_UsePrompt")
+    UI:Toggle(g3.Body, "Usar toque (touch)", "Egg_UseTouch")
+    UI:Toggle(g3.Body, "Usar remote (hook)", "Egg_UseRemote")
+
+    local g4 = UI:Section(tEgg, "Diagnóstico")
+    UI:Button(g4.Body, "Escanear ovos e copiar lista", function()
+        local list = Egg.Scan(true)
+        local lines = {}
+        for _, e in ipairs(list) do
+            lines[#lines + 1] = string.format("%s | %s | %s | $%s/s | base=%s",
+                e.obj.Name, e.pet, e.rarity, Util.Format(e.income), tostring(e.owned))
+        end
+        Util.Clipboard(table.concat(lines, "\n"))
+        Notify.Push("Diagnóstico", #list .. " ovos escaneados (copiado).", 4, "info")
+    end)
+
+    -- ================= AUTO FARM =================
+    local tFarm = UI:Tab("Auto Farm", "🌾")
+    local f1 = UI:Section(tFarm, "Rotinas")
+    UI:Toggle(f1.Body, "Ativar Auto Farm", "Farm_Enabled")
+    UI:Toggle(f1.Body, "Auto Hatch (chocar)", "Farm_Hatch")
+    UI:Toggle(f1.Body, "Auto Claim (coletar)", "Farm_Claim")
+    UI:Toggle(f1.Body, "Auto Treadmill", "Farm_Treadmill")
+    UI:Toggle(f1.Body, "Auto Sell", "Farm_Sell")
+    UI:Toggle(f1.Body, "Auto Upgrade", "Farm_Upgrade")
+    UI:Toggle(f1.Body, "Auto Equipar melhor", "Farm_EquipBest")
+
+    local f2 = UI:Section(tFarm, "Ajustes")
+    UI:Slider(f2.Body, "Delay de hatch", "Farm_HatchDelay", 0.1, 3, 2)
+    UI:Slider(f2.Body, "Delay de claim", "Farm_ClaimDelay", 0.5, 10, 1)
+    UI:Button(f2.Body, "Pressionar todos os prompts agora", function() Farm.PressAll() end)
+
+    -- ================= EVENTOS =================
+    local tEv = UI:Tab("Eventos", "🎪")
+    local v1 = UI:Section(tEv, "Auto Eventos (ciclo 30 min)")
+    UI:Toggle(v1.Body, "Ativar Auto Eventos", "Event_Auto")
+    UI:Toggle(v1.Body, "Dr. Scramble / Mecha / Drones", "Event_DrScramble")
+    UI:Toggle(v1.Body, "Rift / Overlord", "Event_Rift")
+    UI:Toggle(v1.Body, "Great Bloom (Sakura)", "Event_GreatBloom")
+    UI:Toggle(v1.Body, "Hungry Frog / Parasitas", "Event_HungryFrog")
+    UI:Toggle(v1.Body, "Halloween (Pumpkin King / Echo)", "Event_Halloween")
+    UI:Toggle(v1.Body, "Nitro Race / Corrida", "Event_NitroRace")
+
+    local v2 = UI:Section(tEv, "Comportamento")
+    UI:Toggle(v2.Body, "Teleportar até o evento", "Event_Teleport")
+    UI:Toggle(v2.Body, "Avisar quando evento aparecer", "Event_Announce")
+    UI:Slider(v2.Body, "Intervalo de varredura", "Event_ScanDelay", 0.3, 5, 1)
+
+    local v3 = UI:Section(tEv, "Eventos detectados")
+    local evLabel = UI:Label(v3.Body, "Nenhum evento detectado.")
+    UI:Button(v3.Body, "Ir para o evento mais próximo", function()
+        local list = Events.Scan()
+        if #list == 0 then Notify.Push("Eventos", "Nada ativo no mapa.", 3, "warn") return end
+        table.sort(list, function(a, b)
+            local r = Util.Root(LP)
+            return Util.Dist(r.Position, a.pos) < Util.Dist(r.Position, b.pos)
+        end)
+        Events.GoTo(list[1])
+    end)
+    task.spawn(function()
+        while task.wait(2) do
+            local list = Events.Scan()
+            if #list == 0 then
+                evLabel.Text = "Nenhum evento detectado."
+            else
+                local names = {}
+                for _, e in ipairs(list) do names[#names + 1] = e.name end
+                evLabel.Text = "Ativos (" .. #list .. "): " .. table.concat(names, " • ")
+            end
+        end
+    end)
+
+    -- ================= PLAYER =================
+    local tPlr = UI:Tab("Player", "🏃")
+    local p1 = UI:Section(tPlr, "Movimento")
+    UI:Toggle(p1.Body, "Speed", "Plr_SpeedEnabled")
+    UI:Slider(p1.Body, "Valor do Speed", "Plr_Speed", 16, 1000, 0)
+    UI:Toggle(p1.Body, "Fly (voar)", "Plr_Fly")
+    UI:Slider(p1.Body, "Velocidade do Fly", "Plr_FlySpeed", 20, 500, 0)
+    UI:Toggle(p1.Body, "Pulo infinito", "Plr_InfJump")
+    UI:Toggle(p1.Body, "Noclip", "Plr_Noclip")
+
+    local p2 = UI:Section(tPlr, "Proteções")
+    UI:Toggle(p2.Body, "Anti-Trap", "Plr_AntiTrap")
+    UI:Toggle(p2.Body, "Anti-Guard (não ser pego)", "Plr_AntiGuard")
+    UI:Toggle(p2.Body, "Anti-Ragdoll", "Plr_AntiRagdoll")
+    UI:Toggle(p2.Body, "Anti-Stun", "Plr_AntiStun")
+    UI:Toggle(p2.Body, "Sem dano de queda", "Plr_NoFall")
+    UI:Toggle(p2.Body, "Anti-AFK", "Plr_AntiAfk")
+
+    local p3 = UI:Section(tPlr, "Mundo")
+    UI:Toggle(p3.Body, "Fullbright", "Plr_Fullbright")
+    UI:Toggle(p3.Body, "Remover névoa", "Plr_NoFog")
+
+    local p4 = UI:Section(tPlr, "Teleportes")
+    local tpBox
+    tpBox = UI:Textbox(p4.Body, "Nick / ID do jogador", "Tp_Player", "ex: Builderman ou 156")
+    UI:Button(p4.Body, "Teleportar até o jogador", function()
+        local p = Util.ByNameOrId(Flags.Tp_Player)
+        local r = p and Util.Root(p)
+        if r then PlayerMod.Teleport(r.Position, 250)
+        else Notify.Push("TP", "Jogador não encontrado.", 3, "err") end
+    end)
+    UI:Button(p4.Body, "Ir para a base", function()
+        local b = Egg.MyBasePos()
+        if b then PlayerMod.Teleport(b, 250) end
+    end, UI.Theme.Accent2)
+
+    local p5 = UI:Section(tPlr, "Utilidades")
+    UI:Button(p5.Body, "Resetar personagem", function() PlayerMod.Reset() end)
+    UI:Button(p5.Body, "Rejoin (reentrar)", function()
+        pcall(function() game:GetService("TeleportService"):Teleport(HUB.Place) end)
+    end)
+    UI:Button(p5.Body, "Servidor aleatório (Server Hop)", function()
+        pcall(function()
+            local api = "https://games.roblox.com/v1/games/" .. HUB.Place .. "/servers/Public?limit=50"
+            local data = Services.Http:JSONDecode(game:HttpGet(api))
+            local list = data.data
+            for _, s in ipairs(list) do
+                if s.playing < s.maxPlayers and s.id ~= game.JobId then
+                    game:GetService("TeleportService"):TeleportToPlaceInstance(HUB.Place, s.id, LP)
+                    return
+                end
+            end
+        end)
+    end)
+    UI:Button(p5.Body, "Copiar Job ID", function()
+        Util.Clipboard(game.JobId)
+        Notify.Push("Info", "Job ID copiado.", 2, "ok")
+    end)
+
+    -- ================= SKINS =================
+    local tSkin = UI:Tab("Skins", "🧬")
+    local k1 = UI:Section(tSkin, "Copiar skin de outro jogador")
+    UI:Textbox(k1.Body, "Nick ou ID do jogador", "Skin_Target", "ex: NickDoCara")
+    UI:Toggle(k1.Body, "Aplicar visível para todos (server)", "Skin_VisibleToAll")
+    UI:Button(k1.Body, "Copiar skins agora", function()
+        Skin.CopyFrom(Flags.Skin_Target, Flags.Skin_VisibleToAll)
+    end)
+    UI:Toggle(k1.Body, "Auto aplicar (loop)", "Skin_AutoApply")
+    UI:Slider(k1.Body, "Intervalo de varredura", "Skin_ScanDelay", 1, 30, 0)
+
+    local k2 = UI:Section(tSkin, "Lista de jogadores")
+    local plrDrop
+    plrDrop = UI:Dropdown(k2.Body, "Escolher jogador", "Skin_Pick", { "Nenhum" })
+    task.spawn(function()
+        while task.wait(3) do
+            local names = {}
+            for _, p in ipairs(Util.PlayersList(true)) do
+                names[#names + 1] = p.Name
+            end
+            if UI.Elements.Skin_Pick then UI.Elements.Skin_Pick.set(names[1] or "Nenhum") end
+        end
+    end)
+    UI:Button(k2.Body, "Usar jogador selecionado", function()
+        local sel = Flags.Skin_Pick
+        if sel and sel ~= "Nenhum" then
+            UI.Elements.Skin_Target.set(sel)
+            Skin.CopyFrom(sel, Flags.Skin_VisibleToAll)
+        end
+    end)
+
+    local k3 = UI:Section(tSkin, "Info")
+    UI:Label(k3.Body, "O copiador varre Character, Backpack e PlayerGui do alvo em busca de atributos de skin (SkinId/Skin/PetSkin) e reenvia o equip. Com 'visível para todos' ligado, o servidor replica a skin para os outros jogadores.")
+
+    -- ================= CONFIG =================
+    local tCfg = UI:Tab("Config", "⚙️")
+    local c1 = UI:Section(tCfg, "Slots")
+    local slotBox = UI:Textbox(c1.Body, "Nome do slot", "Cfg_Slot", "default")
+    UI:Button(c1.Body, "Salvar configuração", function() Cfg.Save(Flags.Cfg_Slot) end)
+    UI:Button(c1.Body, "Carregar configuração", function() Cfg.Load(Flags.Cfg_Slot) end, UI.Theme.Accent2)
+    UI:Button(c1.Body, "Deletar slot", function()
+        if Util.FileAPI() then
+            pcall(delfile, HUB.Folder .. "/" .. Flags.Cfg_Slot .. ".json")
+            Notify.Push("Config", "Slot deletado.", 2, "ok")
+        end
+    end, UI.Theme.Bad)
+
+    local c2 = UI:Section(tCfg, "Compartilhar")
+    UI:Button(c2.Body, "Exportar (copiar JSON)", function() Cfg.Export() end)
+    UI:Textbox(c2.Body, "Colar JSON para importar", "Cfg_Import", "cole aqui")
+    UI:Button(c2.Body, "Importar JSON colado", function()
+        local ok, data = pcall(function()
+            return Services.Http:JSONDecode(Flags.Cfg_Import)
+        end)
+        if ok and data then Cfg.Apply(data)
+        else Notify.Push("Config", "JSON inválido.", 3, "err") end
+    end)
+
+    local c3 = UI:Section(tCfg, "Sistema")
+    UI:Toggle(c3.Body, "Auto Save", "Sys_AutoSave")
+    UI:Slider(c3.Body, "Intervalo do Auto Save", "Sys_AutoSaveInterval", 10, 600, 0)
+    UI:Toggle(c3.Body, "Notificações", "Sys_Notify")
+    UI:Toggle(c3.Body, "Watermark", "Sys_Watermark")
+    UI:Toggle(c3.Body, "Mostrar FPS", "Sys_Fps")
+    UI:Toggle(c3.Body, "Anti-Kick", "Sys_AntiKick")
+    UI:Toggle(c3.Body, "Auto-Rejoin ao cair", "Sys_AutoRejoin")
+    UI:Keybind(c3.Body, "Tecla para esconder UI", "Sys_UiKey")
+    UI:Keybind(c3.Body, "Tecla de pânico (desliga tudo)", "Sys_PanicKey")
+
+    -- ================= INFO =================
+    local tInfo = UI:Tab("Info", "ℹ️")
+    local i1 = UI:Section(tInfo, "Sobre")
+    UI:Label(i1.Body, HUB.Name .. " v" .. HUB.Version ..
+        "\nJogo: Steal An Egg (Place ID " .. HUB.Place .. ")" ..
+        "\nExecutor: " .. (identifyexecutor and identifyexecutor() or "desconhecido") ..
+        "\nDrawing: " .. (Util.HasDrawing() and "disponível" or "indisponível (fallback Highlight)") ..
+        "\nFile API: " .. (Util.FileAPI() and "disponível" or "indisponível (export via clipboard)"))
+
+    local i2 = UI:Section(tInfo, "Estatísticas")
+    local statLabel = UI:Label(i2.Body, "")
+    task.spawn(function()
+        while task.wait(1) do
+            local fps = math.floor(1 / math.max(Run.RenderStepped:Wait(), 1e-4))
+            statLabel.Text = string.format(
+                "Ovos no mapa: %d\nOvos roubados: %d\nEventos ativos: %d\nFPS: ~%d",
+                #Egg.Scan(), State.Stolen or 0, #Events.Active, fps)
+        end
+    end)
+
+    local i3 = UI:Section(tInfo, "Diagnóstico do jogo")
+    UI:Button(i3.Body, "Dump da estrutura (copiar)", function()
+        local lines = {}
+        local function dump(o, depth)
+            if depth > 3 then return end
+            lines[#lines + 1] = string.rep("  ", depth) .. o.Name .. " [" .. o.ClassName .. "]"
+            for _, c in ipairs(o:GetChildren()) do dump(c, depth + 1) end
+        end
+        for _, name in ipairs({ "AreaEggSlotsClient", "SmartPromptPart", "Plots" }) do
+            local o = WS:FindFirstChild(name)
+            if o then dump(o, 0) else lines[#lines + 1] = name .. " -> não encontrado" end
+        end
+        Util.Clipboard(table.concat(lines, "\n"))
+        Notify.Push("Dump", #lines .. " linhas copiadas.", 4, "info")
+    end)
+    UI:Button(i3.Body, "Checar compatibilidade", function()
+        local rep = {}
+        rep[#rep + 1] = "AreaEggSlotsClient: " .. tostring(WS:FindFirstChild("AreaEggSlotsClient") ~= nil)
+        rep[#rep + 1] = "SmartPromptPart: " .. tostring(WS:FindFirstChild("SmartPromptPart") ~= nil)
+        rep[#rep + 1] = "Plots: " .. tostring(WS:FindFirstChild("Plots") ~= nil)
+        rep[#rep + 1] = "Packages.Networking: " .. tostring(RS:FindFirstChild("Packages") ~= nil)
+        Notify.Push("Compatibilidade", table.concat(rep, " | "), 6, "info")
+    end)
+
+    -- panic key
+    UIS.InputBegan:Connect(function(i, gp)
+        if gp then return end
+        if i.KeyCode == Enum.KeyCode[Flags.Sys_PanicKey] then
+            for k, v in pairs(Flags) do
+                if type(v) == "boolean" and UI.Elements[k] and k:match("^Aim_")
+                or k:match("^Silent_") or k:match("^Esp_") or k:match("^Egg_Auto")
+                or k:match("^Farm_Enabled") or k:match("^Event_Auto") or k:match("^Plr_Fly") then
+                    UI.Elements[k].set(false)
+                end
+            end
+            Notify.Push("Pânico", "Funções desligadas.", 3, "warn")
+        end
+    end)
+end
+
+--=====================================================================
+-- 17) INICIALIZAÇÃO
+--=====================================================================
+local function Init()
+    if LP:GetAttribute("VeniceHubLoaded") then
+        local old = (gethui and gethui() or LP:WaitForChild("PlayerGui")):FindFirstChild("VeniceHub")
+        if old then old:Destroy() end
+    end
+    LP:SetAttribute("VeniceHubLoaded", true)
+
+    if game.PlaceId ~= HUB.Place then
+        print("[Venice Hub] Aviso: PlaceId diferente (" .. game.PlaceId .. "). Alguns recursos podem não funcionar.")
+    end
+
+    BuildPanel()
+    Visuals.BuildFov()
+    Combat.InstallSilent()
+
+    Egg.StealLoop()
+    Farm.Loop()
+    Farm.Treadmill()
+    Events.Loop()
+    Skin.Loop()
+    Cfg.AutoSave()
+    PlayerMod.Hooks()
+    PlayerMod.FlyLoop()
+    Visuals.Loop()
+
+    Run.RenderStepped:Connect(function()
+        local mode = Flags.Aim_Mode
+        local key = Enum.KeyCode[Flags.Aim_Key] or Enum.KeyCode.E
+        local active = Flags.Aim_Enabled
+        if mode == "Hold" then active = active and UIS:IsKeyDown(key) end
+        if mode == "Toggle" then active = Flags.Aim_Enabled end
+        if active then Combat.AimStep() end
+    end)
+
+    task.spawn(function()
+        while task.wait(0.1) do
+            local skey = Enum.KeyCode[Flags.Silent_Key] or Enum.KeyCode.Q
+            local smode = Flags.Silent_Mode
+            if smode == "Camera" or smode == "Híbrido" then
+                if Flags.Silent_Enabled and UIS:IsKeyDown(skey) then
+                    local t = Combat.PickTarget()
+                    if t then
+                        Services.Cam.CFrame = CFrame.new(Services.Cam.CFrame.Position, t.pos)
+                    end
+                end
+            end
+        end
+    end)
+
+    Notify.Push("Pronto", "Painel iniciado. Tecla de pânico: " .. Flags.Sys_PanicKey, 5, "ok")
+    print("[Venice Hub] v" .. HUB.Version .. " carregado em " .. game.JobId)
+end
+
+-- pcall de segurança na inicialização
+local ok, err = pcall(Init)
+if not ok then
+    warn("[Venice Hub] Erro na inicialização: " .. tostring(err))
+end
+
+return HUB
