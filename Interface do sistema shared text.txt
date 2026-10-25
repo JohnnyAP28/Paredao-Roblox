@@ -1,0 +1,1574 @@
+--[[=====================================================================
+   (original)  ·  Paredão Supremo  ·  by Venice
+   VIP · ADMIN · SKINS · MÚSICA · LOJA · PLAYER · AMBIENTE · DIAGNÓSTICO
+   Executores: Delta · Solara · Xeno · Wave · Fluxus
+   Uso: execute DENTRO do jogo. Re-executar é seguro (recria a UI).
+   Padrão: TUDO DESLIGADO (OFF).
+=====================================================================]]
+
+--============================== SERVIÇOS ==============================--
+local Players           = game:GetService("Players")
+local RunService        = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService  = game:GetService("UserInputService")
+local StarterGui        = game:GetService("StarterGui")
+local TweenService      = game:GetService("TweenService")
+local Lighting          = game:GetService("Lighting")
+local VirtualUser       = game:GetService("VirtualUser")
+local SoundService      = game:GetService("SoundService")
+local MarketplaceService = game:GetService("MarketplaceService")
+
+local LP = Players.LocalPlayer
+
+--=============================== CONFIG ===============================--
+local CONFIG = {
+	WalkSpeed    = 60,
+	JumpPower    = 90,
+	FlySpeed     = 90,
+	ReapplyEvery = 5,
+}
+
+local VIP_WORDS   = {"vip","isvip","hasvip","vipstatus","vipowner","premium","ispremium","doador","apoiador"}
+local ADMIN_WORDS = {"admin","adm","staff","moderador","owner","painel","panel","abuse","ferramenta","tool"}
+local SKIN_WORDS  = {"skin","skins","outfit","cosmetic","cosmetico","roupa","avatar","look","modelo","estilo","traje","personagem"}
+local INV_WORDS   = {"invent","colecao","collection","guardaroupa","wardrobe","skins"}
+local SKIP_WORDS  = {"skip","pular","pule","next","proxima","passar","votar","vote"}
+local PLAY_WORDS  = {"request","solicitar","tocar","addsong","fila","queue","pedir","play"}
+local LOJA_WORDS  = {"gamepass","pass","purchase","comprar","buy","prompt","produto","product"}
+local FLAGS       = {"Owned","IsOwned","Unlocked","IsUnlocked","Locked","IsLocked","Bought","IsBought",
+                     "Purchased","IsPurchased","Price","Cost","Free","IsFree","Obtained","IsObtained","Available"}
+
+local ESTADO = {}   -- guarda o que está ligado, pra reaplicar no respawn
+
+--============================= UTILITÁRIOS ============================--
+local COR_ON, COR_OFF   = Color3.fromRGB(126, 74, 232), Color3.fromRGB(48, 43, 66)
+local COR_BG, COR_ITEM  = Color3.fromRGB(20, 17, 30), Color3.fromRGB(34, 29, 48)
+local COR_TXT           = Color3.fromRGB(238, 234, 255)
+local COR_OK, COR_ERR   = Color3.fromRGB(96, 200, 130), Color3.fromRGB(200, 80, 90)
+
+local function notif(texto, cor)
+	local sg = LP.PlayerGui:FindFirstChild("OriginalNotif")
+	if not sg then
+		sg = Instance.new("ScreenGui")
+		sg.Name = "OriginalNotif"
+		sg.ResetOnSpawn = false
+		sg.IgnoreGuiInset = true
+		sg.DisplayOrder = 900
+		sg.Parent = LP.PlayerGui
+	end
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.new(0, 350, 0, 36)
+	lbl.Position = UDim2.new(0.5, -175, 0, 16)
+	lbl.BackgroundColor3 = cor or COR_ON
+	lbl.BackgroundTransparency = 0.12
+	lbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+	lbl.Font = Enum.Font.GothamBold
+	lbl.TextSize = 13
+	lbl.TextWrapped = true
+	lbl.Text = texto
+	lbl.Parent = sg
+	Instance.new("UICorner", lbl).CornerRadius = UDim.new(0, 8)
+	task.delay(3.4, function()
+		TweenService:Create(lbl, TweenInfo.new(0.4), {BackgroundTransparency = 1, TextTransparency = 1}):Play()
+		task.wait(0.45)
+		lbl:Destroy()
+	end)
+end
+
+local REMOTES = {}
+local function scanRemotes()
+	REMOTES = {}
+	for _, root in ipairs({ReplicatedStorage, workspace}) do
+		pcall(function()
+			for _, d in ipairs(root:GetDescendants()) do
+				if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") then
+					table.insert(REMOTES, d)
+				end
+			end
+		end)
+	end
+end
+scanRemotes()
+
+local function fireMatching(palavras, ...)
+	local args = {...}
+	local nomes = {}
+	for _, r in ipairs(REMOTES) do
+		local nm = string.lower(r.Name)
+		for _, p in ipairs(palavras) do
+			if string.find(nm, p, 1, true) then
+				table.insert(nomes, r.Name)
+				task.spawn(function()
+					pcall(function()
+						if r:IsA("RemoteEvent") then
+							r:FireServer(table.unpack(args))
+						else
+							r:InvokeServer(table.unpack(args))
+						end
+					end)
+				end)
+				break
+			end
+		end
+	end
+	return nomes
+end
+
+local function flagValue(flag)
+	local f = string.lower(flag)
+	if string.find(f, "unlocked") then return true end
+	if string.find(f, "locked")   then return false end
+	if string.find(f, "price") or string.find(f, "cost") then return 0 end
+	return true
+end
+
+local function applyFlags(obj)
+	local achou = false
+	for _, flag in ipairs(FLAGS) do
+		if obj:GetAttribute(flag) ~= nil then
+			pcall(function() obj:SetAttribute(flag, flagValue(flag)) end)
+			achou = true
+		end
+		local v = obj:FindFirstChild(flag)
+		if v and v:IsA("ValueBase") then
+			pcall(function() v.Value = flagValue(flag) end)
+			achou = true
+		end
+	end
+	return achou
+end
+
+--#################### NOVO: TOQUE VIRTUAL E BUSCAS ####################--
+local function estaVisivel(obj)
+	local o = obj
+	while o and o ~= LP.PlayerGui do
+		if o:IsA("GuiObject") and not o.Visible then return false end
+		if o:IsA("LayerCollector") and not o.Enabled then return false end
+		o = o.Parent
+	end
+	return true
+end
+
+local function cliqueVirtual(botao)
+	if not botao or not botao.Parent then return false, "botão inexistente" end
+	local cam = workspace.CurrentCamera
+	if not cam then return false, "sem câmera" end
+	local pos = botao.AbsolutePosition + (botao.AbsoluteSize / 2)
+	local ok, err = pcall(function()
+		VirtualUser:Button1Down(Vector3.new(pos.X, pos.Y, 0), cam.CFrame)
+		task.wait(0.07)
+		VirtualUser:Button1Up(Vector3.new(pos.X, pos.Y, 0), cam.CFrame)
+	end)
+	if not ok then return false, tostring(err) end
+	return true
+end
+
+local function acharBotoesPorTexto(fragmento, limite, exigirVisivel)
+	local achados = {}
+	fragmento = string.lower(fragmento)
+	for _, g in ipairs(LP.PlayerGui:GetDescendants()) do
+		if g:IsA("GuiButton") then
+			local txt = g:IsA("TextButton") and string.lower(g.Text) or ""
+			local alt = g:IsA("ImageButton") and string.lower(g.Name) or ""
+			if string.find(txt, fragmento, 1, true) or string.find(alt, fragmento, 1, true) then
+				if (not exigirVisivel) or (estaVisivel(g) and g.AbsoluteSize.X > 0) then
+					table.insert(achados, g)
+					if limite and #achados >= limite then break end
+				end
+			end
+		end
+	end
+	return achados
+end
+
+local function liberarBotao(b)
+	pcall(function()
+		b.Active = true
+		b.Visible = true
+		if b.Interactable ~= nil then b.Interactable = true end
+		if b.Selectable ~= nil then b.Selectable = true end
+	end)
+end
+
+local function acharSons()
+	local lista = {}
+	for _, root in ipairs({workspace, SoundService, ReplicatedStorage}) do
+		pcall(function()
+			for _, d in ipairs(root:GetDescendants()) do
+				if d:IsA("Sound") and d.IsPlaying and d.TimeLength > 0 then
+					table.insert(lista, d)
+				end
+			end
+		end)
+	end
+	table.sort(lista, function(a, b) return a.Volume > b.Volume end)
+	return lista
+end
+
+--================================= VIP ================================--
+local function aplicarVip(player)
+	player = player or LP
+	for _, n in ipairs(VIP_WORDS) do
+		pcall(function() player:SetAttribute(n, true) end)
+		pcall(function() player:SetAttribute(n:upper(), true) end)
+	end
+	local ls = player:FindFirstChild("leaderstats")
+	if ls then
+		for _, v in ipairs(ls:GetChildren()) do
+			if v:IsA("ValueBase") then
+				local nm = string.lower(v.Name)
+				for _, w in ipairs(VIP_WORDS) do
+					if string.find(nm, w, 1, true) then pcall(function() v.Value = true end) end
+				end
+			end
+		end
+	end
+end
+
+local function vipRemotes()
+	fireMatching({"vip","premium","grantvip","vipjoin"})
+end
+
+--============================= ADMIN ABUSE ============================--
+local paineisAchados = {}
+local linhasPainel = {}
+
+local function coletarPaineis()
+	local lista = {}
+	for _, g in ipairs(LP.PlayerGui:GetChildren()) do
+		local nm = string.lower(g.Name)
+		for _, w in ipairs(ADMIN_WORDS) do
+			if string.find(nm, w, 1, true) then table.insert(lista, g) break end
+		end
+	end
+	for _, g in ipairs(LP.PlayerGui:GetDescendants()) do
+		if g:IsA("Frame") then
+			local nm = string.lower(g.Name)
+			for _, w in ipairs({"painel","panel","admin","abuse","adm"}) do
+				if string.find(nm, w, 1, true) then table.insert(lista, g) break end
+			end
+		end
+	end
+	return lista
+end
+
+local function forcarAdmin(silencioso)
+	for _, n in ipairs(ADMIN_WORDS) do
+		pcall(function() LP:SetAttribute(n, true) end)
+	end
+	local botoes = {}
+	pcall(function()
+		for _, g in ipairs(LP.PlayerGui:GetDescendants()) do
+			local nm = string.lower(g.Name)
+			local bate = false
+			for _, w in ipairs(ADMIN_WORDS) do
+				if string.find(nm, w, 1, true) then bate = true break end
+			end
+			if bate then
+				pcall(function()
+					if g:IsA("ScreenGui") then
+						g.Enabled = true
+						g.DisplayOrder = 100
+					elseif g:IsA("GuiObject") then
+						g.Visible = true
+						g.ZIndex = 50
+						liberarBotao(g)
+					end
+				end)
+				if g:IsA("GuiButton") then table.insert(botoes, g) end
+			end
+		end
+	end)
+	if not silencioso then
+		notif(#botoes > 0 and ("Admin: " .. #botoes .. " botões destravados")
+			or "Nenhum botão admin achado (use a lista)", #botoes > 0 and COR_OK or COR_OFF)
+	end
+	return botoes
+end
+
+local function abrirPainelAdmin()
+	-- 1) tenta abrir os painéis direto
+	local abertos = 0
+	for _, p in ipairs(coletarPaineis()) do
+		pcall(function()
+			if p:IsA("ScreenGui") then p.Enabled = true
+			else p.Visible = true end
+			abertos += 1
+		end)
+	end
+	-- 2) tenta simular o toque nos botões admin visíveis
+	local tocados = 0
+	for _, b in ipairs(acharBotoesPorTexto("admin", 6, true)) do
+		liberarBotao(b)
+		if cliqueVirtual(b) then tocados += 1 end
+	end
+	return abertos, tocados
+end
+
+--================================ SKINS ================================--
+local skinsEncontradas = 0
+
+local function coletarSkins()
+	local lista, vistos = {}, {}
+	for _, root in ipairs({ReplicatedStorage, LP.PlayerGui, LP:FindFirstChild("Backpack"), workspace}) do
+		if root then
+			pcall(function()
+				for _, d in ipairs(root:GetDescendants()) do
+					if not vistos[d] then
+						local nm = string.lower(d.Name)
+						local pai = d.Parent and string.lower(d.Parent.Name) or ""
+						local bate = false
+						for _, k in ipairs(SKIN_WORDS) do
+							if string.find(nm, k, 1, true) or string.find(pai, k, 1, true) then bate = true break end
+						end
+						if bate then vistos[d] = true table.insert(lista, d) end
+					end
+				end
+			end)
+		end
+	end
+	return lista
+end
+
+local function idDoSkin(obj)
+	return tostring(obj:GetAttribute("Id") or obj:GetAttribute("ID")
+		or obj:GetAttribute("SkinId") or obj:GetAttribute("SkinID")
+		or obj:GetAttribute("Name") or obj:GetAttribute("Nome") or obj.Name)
+end
+
+local function unlockSkins()
+	local lista = coletarSkins()
+	skinsEncontradas = 0
+	local nomes = {}
+	for _, obj in ipairs(lista) do
+		if applyFlags(obj) then skinsEncontradas += 1 end
+		for _, c in ipairs(obj:GetChildren()) do applyFlags(c) end
+		if obj.Parent then applyFlags(obj.Parent) end
+		table.insert(nomes, idDoSkin(obj))
+		table.insert(nomes, obj.Name)
+		for _, d in ipairs(obj:GetDescendants()) do
+			if d:IsA("ProximityPrompt") then
+				pcall(function() d.Enabled = true d.HoldDuration = 0 d.MaxActivationDistance = 1000 end)
+			elseif d:IsA("ClickDetector") then
+				pcall(function() d.MaxActivationDistance = 1000 end)
+			end
+		end
+	end
+	local unico, visto = {}, {}
+	for _, n in ipairs(nomes) do
+		if not visto[n] then visto[n] = true table.insert(unico, n) end
+	end
+	local texto = table.concat(unico, ",")
+	pcall(function()
+		for _, obj in ipairs({LP, LP:FindFirstChild("leaderstats"), LP:FindFirstChild("Skins"), LP:FindFirstChild("Data")}) do
+			if obj then
+				for _, a in ipairs(obj:GetAttributes()) do
+					local an = string.lower(a)
+					local val = obj:GetAttribute(a)
+					if (string.find(an, "skin") or string.find(an, "own") or string.find(an, "unlock") or string.find(an, "invent")) then
+						if type(val) == "table" and #val < #unico then obj:SetAttribute(a, unico)
+						elseif type(val) == "string" and #val < #texto then obj:SetAttribute(a, texto) end
+					end
+				end
+				for _, v in ipairs(obj:GetChildren()) do
+					if v:IsA("StringValue") and (string.find(string.lower(v.Name), "skin") or string.find(string.lower(v.Name), "own")) then
+						if #v.Value < #texto then v.Value = texto end
+					end
+				end
+			end
+		end
+	end)
+	return skinsEncontradas
+end
+
+local function comprarSkins()
+	local alvos = {}
+	for _, obj in ipairs(coletarSkins()) do
+		local dono = obj:GetAttribute("Owned") or obj:GetAttribute("IsOwned")
+			or obj:GetAttribute("Unlocked") or obj:GetAttribute("IsUnlocked")
+		if dono ~= true then table.insert(alvos, obj) end
+	end
+	if #alvos == 0 then alvos = coletarSkins() end
+	task.spawn(function()
+		local n = 0
+		for _, obj in ipairs(alvos) do
+			n += 1
+			if n > 90 then break end
+			fireMatching({"buyskin","purchaseskin","unlockskin","comprarskin"}, obj.Name)
+			task.wait(0.05)
+			fireMatching({"buyskin","purchaseskin","unlockskin","equipskin","setskin"}, idDoSkin(obj))
+			task.wait(0.05)
+		end
+		notif("Forçado: " .. n .. " skins via remotes", COR_ON)
+	end)
+end
+
+local function injetarNoInventario()
+	local inv
+	for _, g in ipairs(LP.PlayerGui:GetDescendants()) do
+		local nm = string.lower(g.Name)
+		for _, w in ipairs(INV_WORDS) do
+			if string.find(nm, w, 1, true) and (g:IsA("GuiObject") or g:IsA("ScreenGui")) then inv = g break end
+		end
+		if inv then break end
+	end
+	if not inv then return 0 end
+	local grid
+	for _, d in ipairs(inv:GetDescendants()) do
+		if (d:IsA("UIGridLayout") or d:IsA("UIListLayout")) and d.Parent and #d.Parent:GetChildren() > 1 then
+			grid = d.Parent break
+		end
+	end
+	if not grid then return 0 end
+	local template
+	for _, c in ipairs(grid:GetChildren()) do
+		if c:IsA("GuiObject") then template = c break end
+	end
+	if not template then return 0 end
+	local existentes = {}
+	for _, c in ipairs(grid:GetChildren()) do
+		if c:IsA("GuiObject") then existentes[string.lower(c.Name)] = true end
+	end
+	local add = 0
+	for _, obj in ipairs(coletarSkins()) do
+		local nome = obj.Name
+		if #nome <= 32 and not existentes[string.lower(nome)] then
+			local ok, cl = pcall(function() return template:Clone() end)
+			if ok and cl then
+				cl.Name = nome
+				local primeiro = true
+				for _, d in ipairs(cl:GetDescendants()) do
+					if d:IsA("ImageLabel") and string.find(string.lower(d.Name), "lock", 1, true) then d.Visible = false
+					elseif d:IsA("TextLabel") and primeiro then d.Text = nome primeiro = false
+					elseif d:IsA("ValueBase") then pcall(function() d.Value = flagValue(d.Name) end) end
+				end
+				cl.Visible = true
+				cl.Parent = grid
+				existentes[string.lower(nome)] = true
+				add += 1
+			end
+		end
+	end
+	return add
+end
+
+--#################### NOVO: MÚSICA (DJ) ####################--
+local function pularMusica()
+	scanRemotes()
+	local tocados = {}
+	for _, w in ipairs(SKIP_WORDS) do
+		local r = fireMatching({w}, true)
+		for _, n in ipairs(r) do table.insert(tocados, n) end
+	end
+	-- tenta variações de argumento
+	fireMatching({"skip","pular","pule"}, 0)
+	fireMatching({"skip","pular","pule"}, "skip")
+
+	-- reforço local: força o áudio atual a terminar
+	local sons = acharSons()
+	local locais = 0
+	for i, s in ipairs(sons) do
+		if i > 3 then break end
+		pcall(function() s.TimePosition = math.max(0, s.TimeLength - 0.2) end)
+		locais += 1
+	end
+	return #tocados, locais
+end
+
+local function solicitarMusica(nome)
+	if not nome or nome == "" then return 0 end
+	scanRemotes()
+	local n = 0
+	for _, w in ipairs(PLAY_WORDS) do
+		n += #fireMatching({w}, nome)
+	end
+	return n
+end
+
+local function infoMusicaAtual()
+	local sons = acharSons()
+	if #sons == 0 then return "Nenhum áudio tocando" end
+	local s = sons[1]
+	local restante = math.max(0, s.TimeLength - s.TimePosition)
+	return string.format("%s · %.0fs/%.0fs · vol %.2f", s.Name, s.TimePosition, s.TimeLength, s.Volume)
+end
+
+--#################### NOVO: LOJA / GAMEPASS ####################--
+local function destravarLoja(silencioso)
+	local marcados = 0
+	for _, l in ipairs(LP.PlayerGui:GetDescendants()) do
+		if l:IsA("TextLabel") or l:IsA("TextButton") then
+			local t = string.lower(l.Text or "")
+			if string.find(t, "comprar", 1, true) or string.find(t, "r$", 1, true) then
+				pcall(function()
+					if l:IsA("TextButton") then l.Text = "COMPRADO" else l.Text = "COMPRADO" end
+					l.TextColor3 = Color3.fromRGB(255, 215, 90)
+				end)
+				marcados += 1
+			end
+		end
+	end
+	for _, b in ipairs(acharBotoesPorTexto("comprar", 40, false)) do liberarBotao(b) end
+	aplicarVip(LP)
+	scanRemotes()
+	fireMatching(LOJA_WORDS)
+	if not silencioso then
+		notif("Loja: " .. marcados .. " itens marcados como COMPRADO", COR_OK)
+	end
+	return marcados
+end
+
+local function simularCompra()
+	local alvos = acharBotoesPorTexto("comprar", 8, true)
+	if #alvos == 0 then
+		notif("Abra a Loja primeiro (nenhum COMPRAR visível)", COR_OFF)
+		return 0
+	end
+	local n = 0
+	for i, b in ipairs(alvos) do
+		if i > 4 then break end
+		liberarBotao(b)
+		if cliqueVirtual(b) then n += 1 end
+		task.wait(0.5)
+	end
+	notif("Toques simulados: " .. n, COR_ON)
+	return n
+end
+
+--=============================== PLAYER ================================--
+local walkOrig, jumpOrig = 16, 50
+do
+	local h = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+	if h then walkOrig, jumpOrig = h.WalkSpeed, h.JumpPower end
+end
+
+local function setVelocidade(on)
+	local c = LP.Character
+	if not c then return end
+	local h = c:FindFirstChildOfClass("Humanoid")
+	if h then h.UseJumpPower = true h.WalkSpeed = on and CONFIG.WalkSpeed or walkOrig end
+end
+
+local function setPulo(on)
+	local c = LP.Character
+	if not c then return end
+	local h = c:FindFirstChildOfClass("Humanoid")
+	if h then h.UseJumpPower = true h.JumpPower = on and CONFIG.JumpPower or jumpOrig end
+end
+
+local noclipConn
+local function setNoclip(on)
+	if noclipConn then noclipConn:Disconnect() noclipConn = nil end
+	if not on then return end
+	noclipConn = RunService.Stepped:Connect(function()
+		local c = LP.Character
+		if c then
+			for _, p in ipairs(c:GetDescendants()) do
+				if p:IsA("BasePart") then p.CanCollide = false end
+			end
+		end
+	end)
+end
+
+local flyBV, flyBG, flyConn
+local function setFly(on)
+	if flyConn then flyConn:Disconnect() flyConn = nil end
+	if flyBV then flyBV:Destroy() flyBV = nil end
+	if flyBG then flyBG:Destroy() flyBG = nil end
+	if not on then return end
+	local root = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+	flyBV = Instance.new("BodyVelocity")
+	flyBV.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+	flyBV.Velocity = Vector3.zero
+	flyBV.Parent = root
+	flyBG = Instance.new("BodyGyro")
+	flyBG.MaxTorque = Vector3.new(1e5, 1e5, 1e5)
+	flyBG.P = 1e4
+	flyBG.Parent = root
+	flyConn = RunService.RenderStepped:Connect(function()
+		local cam = workspace.CurrentCamera
+		if not cam or not root.Parent then return end
+		local move = Vector3.zero
+		if UserInputService:IsKeyDown(Enum.KeyCode.W) then move += cam.CFrame.LookVector end
+		if UserInputService:IsKeyDown(Enum.KeyCode.S) then move -= cam.CFrame.LookVector end
+		if UserInputService:IsKeyDown(Enum.KeyCode.A) then move -= cam.CFrame.RightVector end
+		if UserInputService:IsKeyDown(Enum.KeyCode.D) then move += cam.CFrame.RightVector end
+		if UserInputService:IsKeyDown(Enum.KeyCode.Space) then move += Vector3.new(0, 1, 0) end
+		if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then move -= Vector3.new(0, 1, 0) end
+		flyBV.Velocity = move * CONFIG.FlySpeed
+		flyBG.CFrame = cam.CFrame
+		root.Velocity = Vector3.zero
+	end)
+end
+
+local espFolder
+local function setESP(on)
+	if espFolder then espFolder:Destroy() espFolder = nil end
+	if not on then return end
+	espFolder = Instance.new("Folder")
+	espFolder.Name = "OriginalESP"
+	espFolder.Parent = workspace
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= LP and plr.Character then
+			local h = Instance.new("Highlight")
+			h.Name = plr.Name
+			h.Adornee = plr.Character
+			h.FillColor = Color3.fromRGB(150, 80, 255)
+			h.OutlineColor = Color3.fromRGB(255, 255, 255)
+			h.FillTransparency = 0.6
+			h.Parent = espFolder
+		end
+	end
+end
+
+--============================== AMBIENTE ===============================--
+local ambBackup
+local function setFullbright(on)
+	if on then
+		if not ambBackup then
+			ambBackup = {Ambient = Lighting.Ambient, OutdoorAmbient = Lighting.OutdoorAmbient,
+				Brightness = Lighting.Brightness, ClockTime = Lighting.ClockTime,
+				FogEnd = Lighting.FogEnd, GlobalShadows = Lighting.GlobalShadows}
+		end
+		Lighting.Ambient = Color3.fromRGB(178, 178, 178)
+		Lighting.OutdoorAmbient = Color3.fromRGB(178, 178, 178)
+		Lighting.Brightness = 3
+		Lighting.ClockTime = 14
+		Lighting.GlobalShadows = false
+	elseif ambBackup then
+		for k, v in pairs(ambBackup) do Lighting[k] = v end
+		ambBackup = nil
+	end
+end
+
+--============================= ANTI-AFK / CHAT =========================--
+LP.Idled:Connect(function()
+	if ESTADO.antiAfk then
+		VirtualUser:Button2Down(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
+		task.wait(1)
+		VirtualUser:Button2Up(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
+	end
+end)
+
+local function sendChat(msg)
+	local ok = pcall(function()
+		local ce = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
+		if ce and ce:FindFirstChild("SayMessageRequest") then
+			ce.SayMessageRequest:FireServer(msg, "All")
+		else
+			error("sem remote")
+		end
+	end)
+	if not ok then pcall(function() StarterGui:SetCore("ChatSendMessage", msg) end) end
+end
+
+--============================== DIAGNÓSTICO ============================--
+local RELATORIO = ""
+
+local function varrer(root, maxDepth, maxNodes, fn)
+	local pilha = {{root, 0}}
+	local cont = 0
+	while #pilha > 0 do
+		local item = table.remove(pilha)
+		local obj, d = item[1], item[2]
+		cont += 1
+		if cont > maxNodes then return end
+		local ok, parar = pcall(fn, obj, d)
+		if not ok then parar = true end
+		if not parar and d < maxDepth then
+			for _, c in ipairs(obj:GetChildren()) do
+				if not c:IsA("Terrain") then table.insert(pilha, {c, d + 1}) end
+			end
+		end
+	end
+end
+
+local function attrsTxt(obj)
+	local t = {}
+	for _, a in ipairs(obj:GetAttributes()) do
+		table.insert(t, a .. "=" .. tostring(obj:GetAttribute(a)))
+	end
+	return #t > 0 and (" [" .. table.concat(t, ", ") .. "]") or ""
+end
+
+local function gerarDiagnostico(resumido)
+	local L = {}
+	local function add(s) table.insert(L, s) end
+
+	add("=====================================================")
+	add("  DIAGNOSTICO (original) · Paredao Supremo")
+	add(resumido and "  MODO: RESUMIDO" or "  MODO: COMPLETO")
+	add("  " .. os.date("%d/%m/%Y %H:%M:%S"))
+	add("=====================================================")
+	add("")
+	add("[SESSAO]")
+	add("  Player: " .. LP.Name .. " | UserId: " .. LP.UserId)
+	add("  PlaceId: " .. game.PlaceId .. " | JobId: " .. game.JobId)
+	add("  Jogadores: " .. #Players:GetPlayers())
+	add("  Executor: " .. tostring(identifyexecutor and identifyexecutor() or "?"))
+	add("  writefile: " .. tostring(writefile ~= nil) .. " | setclipboard: " .. tostring(setclipboard ~= nil) .. " | request: " .. tostring(request ~= nil))
+	add("")
+
+	add("[ATTRIBUTES DO PLAYER]")
+	local aTxt = {}
+	for _, a in ipairs(LP:GetAttributes()) do
+		table.insert(aTxt, "  " .. a .. " = " .. tostring(LP:GetAttribute(a)))
+	end
+	add(#aTxt > 0 and table.concat(aTxt, "\n") or "  (nenhum)")
+	add("")
+
+	add("[LEADERSTATS]")
+	local ls = LP:FindFirstChild("leaderstats")
+	if ls then
+		for _, v in ipairs(ls:GetChildren()) do
+			add("  " .. v.ClassName .. " :: " .. v.Name .. " = " .. tostring(v.Value))
+		end
+	else add("  (sem leaderstats)") end
+	add("")
+
+	add("[REMOTES] total " .. #REMOTES)
+	for _, r in ipairs(REMOTES) do
+		add("  " .. r:GetFullName() .. " [" .. r.ClassName .. "]")
+	end
+	add("")
+
+	add("[ALVOS AGRUPADOS]")
+	local grupos = {
+		VIP = {"vip","premium","doador"},
+		SKINS = {"skin","outfit","cosmetic","roupa"},
+		ADMIN = {"admin","adm","staff","mod","owner","abuse"},
+		MUSICA_PULAR = SKIP_WORDS,
+		MUSICA_TOCAR = PLAY_WORDS,
+		LOJA_GAMEPASS = LOJA_WORDS,
+		MOEDA = {"coin","cash","money","moeda","gem","saldo"},
+		CHAT = {"chat","say","command","cmd"},
+	}
+	local nomesG = {}
+	for k in pairs(grupos) do table.insert(nomesG, k) end
+	table.sort(nomesG)
+	for _, nomeG in ipairs(nomesG) do
+		add("  --- " .. nomeG .. " ---")
+		local achou = false
+		for _, r in ipairs(REMOTES) do
+			local nm = string.lower(r.Name)
+			for _, p in ipairs(grupos[nomeG]) do
+				if string.find(nm, p, 1, true) then
+					add("    " .. r:GetFullName())
+					achou = true
+					break
+				end
+			end
+		end
+		if not achou then add("    (nada)") end
+	end
+	add("")
+
+	add("[BOTOES ADMIN / PAINEL]")
+	local achouA = false
+	for _, g in ipairs(coletarPaineis()) do
+		local vis = g:IsA("ScreenGui") and ("Enabled=" .. tostring(g.Enabled)) or ("Visible=" .. tostring(g.Visible))
+		add("  " .. g:GetFullName() .. " [" .. g.ClassName .. "] " .. vis .. attrsTxt(g))
+		achouA = true
+		for _, c in ipairs(g:GetChildren()) do
+			add("      > " .. c.ClassName .. " :: " .. c.Name
+				.. (c:IsA("GuiObject") and (" vis=" .. tostring(c.Visible)) or ""))
+		end
+	end
+	if not achouA then add("  (nada)") end
+	add("")
+
+	add("[BOTOES COMPRAR / PULE / SKIP]")
+	for _, b in ipairs(acharBotoesPorTexto("comprar", 20, false)) do
+		add("  COMPRAR :: " .. b:GetFullName() .. " pos=" .. tostring(b.AbsolutePosition))
+	end
+	for _, b in ipairs(acharBotoesPorTexto("pule", 20, false)) do
+		add("  PULE :: " .. b:GetFullName() .. " pos=" .. tostring(b.AbsolutePosition))
+	end
+	add("")
+
+	add("[AUDIO TOCANDO AGORA]")
+	local sons = acharSons()
+	if #sons == 0 then add("  (nenhum)")
+	else
+		for i, s in ipairs(sons) do
+			if i > 10 then break end
+			add("  " .. s:GetFullName() .. " t=" .. string.format("%.1f/%.1f", s.TimePosition, s.TimeLength) .. " vol=" .. s.Volume)
+		end
+	end
+	add("")
+
+	add("[OBJETOS COM 'SKIN']")
+	local nSkin = 0
+	for _, obj in ipairs(coletarSkins()) do
+		if #obj:GetFullName() < 150 then
+			add("  " .. obj:GetFullName() .. " [" .. obj.ClassName .. "]" .. attrsTxt(obj))
+			nSkin += 1
+			if resumido and nSkin > 60 then add("  ...") break end
+		end
+	end
+	if nSkin == 0 then add("  (nada)") end
+	add("")
+
+	add("[SCREENGUIS]")
+	for _, sg in ipairs(LP.PlayerGui:GetChildren()) do
+		add("  " .. sg.Name .. " Enabled=" .. tostring(sg.Enabled) .. " DisplayOrder=" .. tostring(sg.DisplayOrder))
+		if not resumido then
+			varrer(sg, 2, 300, function(o, d)
+				if o == sg then return false end
+				add(string.rep("    ", d + 1) .. o.ClassName .. " :: " .. o.Name
+					.. (o:IsA("GuiObject") and (" vis=" .. tostring(o.Visible)) or ""))
+				return false
+			end)
+		end
+	end
+	add("")
+
+	if not resumido then
+		add("[WORKSPACE TOP]")
+		for _, c in ipairs(workspace:GetChildren()) do add("  " .. c.ClassName .. " :: " .. c.Name) end
+		add("")
+		add("[REPLICATEDSTORAGE TOP]")
+		for _, c in ipairs(ReplicatedStorage:GetChildren()) do add("  " .. c.ClassName .. " :: " .. c.Name) end
+		add("")
+		add("[PROMPTS / CLICKDETECTORS]")
+		varrer(workspace, 3, 2500, function(o)
+			if o:IsA("ProximityPrompt") then add("  PROMPT :: " .. o:GetFullName() .. " :: " .. o.ActionText)
+			elseif o:IsA("ClickDetector") then add("  CLICK :: " .. o:GetFullName()) end
+			return false
+		end)
+		add("")
+		add("[LIGHTING]")
+		add("  Ambient=" .. tostring(Lighting.Ambient) .. " Brightness=" .. tostring(Lighting.Brightness))
+		add("  ClockTime=" .. tostring(Lighting.ClockTime) .. " FogEnd=" .. tostring(Lighting.FogEnd))
+		add("")
+	end
+	add("=== FIM ===")
+	local txt = table.concat(L, "\n")
+	if #txt > 350000 then txt = string.sub(txt, 1, 350000) .. "\n[TRUNCADO]" end
+	return txt
+end
+
+--#################### NOVO: EXPORTAR / COPIAR (CORRIGIDO) ####################--
+local function erroLimpo(e)
+	return (tostring(e):gsub("\n", " "):sub(1, 110))
+end
+
+local function copiarRelatorio(resumido)
+	local txt = gerarDiagnostico(resumido)
+	RELATORIO = txt
+	local erros = {}
+	if setclipboard then
+		local ok, err = pcall(setclipboard, txt)
+		if ok then notif("Copiado (" .. #txt .. " chars). Cole onde quiser.", COR_OK) return true end
+		table.insert(erros, "setclipboard: " .. erroLimpo(err))
+	end
+	if syn and syn.set_clipboard then
+		local ok, err = pcall(syn.set_clipboard, txt)
+		if ok then notif("Copiado via syn (" .. #txt .. " chars)", COR_OK) return true end
+		table.insert(erros, "syn: " .. erroLimpo(err))
+	end
+	notif("Falha ao copiar -> " .. table.concat(erros, " | "), COR_ERR)
+	return false
+end
+
+local function salvarRelatorio(resumido)
+	local txt = gerarDiagnostico(resumido)
+	RELATORIO = txt
+	local nome = "diagnostico_original.txt"
+	local erros, sucesso = {}, false
+
+	local function tentar(fn, rotulo, nomeArq)
+		if sucesso then return end
+		local ok, err = pcall(fn, nomeArq, txt)
+		if ok then sucesso = true else table.insert(erros, rotulo .. ": " .. erroLimpo(err)) end
+	end
+
+	if writefile then tentar(writefile, "writefile", nome) end
+	if not sucesso and syn and syn.write_file then tentar(syn.write_file, "syn.write_file", nome) end
+	if not sucesso and writefile then tentar(writefile, "writefile(/workspace)", "/workspace/" .. nome) end
+
+	if sucesso then
+		local dir = ""
+		pcall(function() dir = getwritedir and getwritedir() or "" end)
+		print("[original] arquivo salvo: " .. nome .. (dir ~= "" and (" em " .. dir) or ""))
+		notif("Salvo: " .. nome .. " (pasta do executor)", COR_OK)
+		return true
+	end
+	-- fallback: se não salvou, copia e avisa
+	copiarRelatorio(resumido)
+	notif("Sem writefile -> copiado. " .. table.concat(erros, " | "), COR_ERR)
+	return false
+end
+
+local function exportarOnline()
+	local txt = gerarDiagnostico(true)
+	RELATORIO = txt
+	if not request then notif("Executor sem 'request' (sem internet API)", COR_OFF) return end
+	notif("Enviando relatório...", COR_ON)
+	task.spawn(function()
+		local ok, res = pcall(function()
+			return request({
+				Url = "https://paste.rs",
+				Method = "PUT",
+				Body = txt,
+				Headers = {["Content-Type"] = "text/plain"},
+			})
+		end)
+		if ok and res and res.Body then
+			local link = tostring(res.Body):gsub("%s", "")
+			RELATORIO = "LINK: " .. link .. "\n\n" .. txt
+			pcall(function() setclipboard(link) end)
+			notif("Link copiado: " .. link, COR_OK)
+			print("[original] " .. link)
+		else
+			notif("Falha no envio: " .. erroLimpo(res), COR_ERR)
+		end
+	end)
+end
+
+--================================= UI ==================================--
+local antigo = LP.PlayerGui:FindFirstChild("OriginalUI")
+if antigo then antigo:Destroy() end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "OriginalUI"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.DisplayOrder = 500
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = LP.PlayerGui
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, 272, 0, 470)
+frame.Position = UDim2.new(0, 14, 0, 70)
+frame.BackgroundColor3 = COR_BG
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Parent = gui
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 12)
+local stroke = Instance.new("UIStroke", frame)
+stroke.Color = Color3.fromRGB(70, 55, 110)
+stroke.Thickness = 1
+
+local topbar = Instance.new("Frame")
+topbar.Size = UDim2.new(1, 0, 0, 40)
+topbar.BackgroundColor3 = Color3.fromRGB(28, 23, 42)
+topbar.BorderSizePixel = 0
+topbar.Parent = frame
+Instance.new("UICorner", topbar).CornerRadius = UDim.new(0, 12)
+
+local titulo = Instance.new("TextLabel")
+titulo.Size = UDim2.new(1, -80, 1, 0)
+titulo.Position = UDim2.new(0, 12, 0, 0)
+titulo.BackgroundTransparency = 1
+titulo.Text = "(original)"
+titulo.TextColor3 = COR_TXT
+titulo.Font = Enum.Font.GothamBold
+titulo.TextSize = 15
+titulo.TextXAlignment = Enum.TextXAlignment.Left
+titulo.Parent = topbar
+
+local function botaoTopo(txt, xOff, cor)
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(0, 30, 0, 26)
+	b.Position = UDim2.new(1, xOff, 0, 7)
+	b.BackgroundColor3 = cor or COR_OFF
+	b.Text = txt
+	b.TextColor3 = COR_TXT
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 15
+	b.AutoButtonColor = true
+	b.Parent = topbar
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 7)
+	return b
+end
+
+local btnMin = botaoTopo("–", -70)
+local btnFechar = botaoTopo("✕", -36, Color3.fromRGB(150, 50, 60))
+
+do
+	local arrastando, inicio, posIni = false, nil, nil
+	topbar.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			arrastando, inicio, posIni = true, input.Position, frame.Position
+			input.Changed:Connect(function()
+				if input.UserInputState == Enum.UserInputState.End then arrastando = false end
+			end)
+		end
+	end)
+	UserInputService.InputChanged:Connect(function(input)
+		if arrastando and (input.UserInputType == Enum.UserInputType.MouseMovement
+			or input.UserInputType == Enum.UserInputType.Touch) then
+			local d = input.Position - inicio
+			frame.Position = UDim2.new(posIni.X.Scale, posIni.X.Offset + d.X,
+				posIni.Y.Scale, posIni.Y.Offset + d.Y)
+		end
+	end)
+end
+
+local btnTudo = Instance.new("TextButton")
+btnTudo.Size = UDim2.new(1, -16, 0, 32)
+btnTudo.Position = UDim2.new(0, 8, 0, 46)
+btnTudo.BackgroundColor3 = COR_ON
+btnTudo.Text = "APLICAR TUDO"
+btnTudo.TextColor3 = Color3.fromRGB(255, 255, 255)
+btnTudo.Font = Enum.Font.GothamBold
+btnTudo.TextSize = 13
+btnTudo.Parent = frame
+Instance.new("UICorner", btnTudo).CornerRadius = UDim.new(0, 8)
+
+local scroll = Instance.new("ScrollingFrame")
+scroll.Size = UDim2.new(1, -14, 1, -132)
+scroll.Position = UDim2.new(0, 7, 0, 84)
+scroll.BackgroundTransparency = 1
+scroll.BorderSizePixel = 0
+scroll.ScrollBarThickness = 4
+scroll.ScrollBarImageColor3 = COR_ON
+scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+scroll.Parent = frame
+
+local layout = Instance.new("UIListLayout")
+layout.Padding = UDim.new(0, 8)
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+layout.Parent = scroll
+
+local ordem = 0
+local function novaCategoria(nome)
+	ordem += 1
+	local cat = Instance.new("Frame")
+	cat.Size = UDim2.new(1, 0, 0, 0)
+	cat.AutomaticSize = Enum.AutomaticSize.Y
+	cat.BackgroundTransparency = 1
+	cat.LayoutOrder = ordem
+	cat.Parent = scroll
+	local layCat = Instance.new("UIListLayout")
+	layCat.Padding = UDim.new(0, 4)
+	layCat.Parent = cat
+
+	local cab = Instance.new("TextButton")
+	cab.Size = UDim2.new(1, 0, 0, 34)
+	cab.BackgroundColor3 = Color3.fromRGB(40, 32, 60)
+	cab.Text = "   ▾  " .. nome
+	cab.TextColor3 = Color3.fromRGB(190, 170, 255)
+	cab.Font = Enum.Font.GothamBold
+	cab.TextSize = 13
+	cab.TextXAlignment = Enum.TextXAlignment.Left
+	cab.Parent = cat
+	Instance.new("UICorner", cab).CornerRadius = UDim.new(0, 8)
+
+	local corpo = Instance.new("Frame")
+	corpo.Size = UDim2.new(1, 0, 0, 0)
+	corpo.AutomaticSize = Enum.AutomaticSize.Y
+	corpo.BackgroundTransparency = 1
+	corpo.Parent = cat
+	local layCorpo = Instance.new("UIListLayout")
+	layCorpo.Padding = UDim.new(0, 5)
+	layCorpo.Parent = corpo
+	local padCorpo = Instance.new("UIPadding")
+	padCorpo.PaddingLeft = UDim.new(0, 6)
+	padCorpo.PaddingRight = UDim.new(0, 6)
+	padCorpo.PaddingBottom = UDim.new(0, 4)
+	padCorpo.Parent = corpo
+
+	cab.MouseButton1Click:Connect(function()
+		corpo.Visible = not corpo.Visible
+		cab.Text = (corpo.Visible and "   ▾  " or "   ▸  ") .. nome
+	end)
+	return corpo
+end
+
+local function criarToggle(parent, texto, chave, cb)
+	local row = Instance.new("TextButton")
+	row.Size = UDim2.new(1, 0, 0, 32)
+	row.BackgroundColor3 = COR_ITEM
+	row.Text = ""
+	row.AutoButtonColor = false
+	row.Parent = parent
+	Instance.new("UICorner", row).CornerRadius = UDim.new(0, 7)
+
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.new(1, -50, 1, 0)
+	lbl.Position = UDim2.new(0, 10, 0, 0)
+	lbl.BackgroundTransparency = 1
+	lbl.Text = texto
+	lbl.TextColor3 = COR_TXT
+	lbl.Font = Enum.Font.Gotham
+	lbl.TextSize = 12
+	lbl.TextXAlignment = Enum.TextXAlignment.Left
+	lbl.Parent = row
+
+	local trilha = Instance.new("Frame")
+	trilha.Size = UDim2.new(0, 34, 0, 18)
+	trilha.Position = UDim2.new(1, -44, 0.5, -9)
+	trilha.BackgroundColor3 = COR_OFF
+	trilha.BorderSizePixel = 0
+	trilha.Parent = row
+	Instance.new("UICorner", trilha).CornerRadius = UDim.new(1, 0)
+
+	local bola = Instance.new("Frame")
+	bola.Size = UDim2.new(0, 14, 0, 14)
+	bola.Position = UDim2.new(0, 2, 0, 2)
+	bola.BackgroundColor3 = Color3.fromRGB(230, 230, 240)
+	bola.BorderSizePixel = 0
+	bola.Parent = trilha
+	Instance.new("UICorner", bola).CornerRadius = UDim.new(1, 0)
+
+	local estado = false
+	local function set(v, chamar)
+		estado = v
+		if chave then ESTADO[chave] = v end
+		trilha.BackgroundColor3 = v and COR_ON or COR_OFF
+		TweenService:Create(bola, TweenInfo.new(0.15), {
+			Position = v and UDim2.new(0, 18, 0, 2) or UDim2.new(0, 2, 0, 2)
+		}):Play()
+		if chamar ~= false then pcall(cb, v) end
+	end
+	row.MouseButton1Click:Connect(function() set(not estado) end)
+	set(false, false)
+	return set
+end
+
+local function criarBotao(parent, texto, cb, cor, altura)
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(1, 0, 0, altura or 30)
+	b.BackgroundColor3 = cor or COR_ITEM
+	b.Text = texto
+	b.TextColor3 = COR_TXT
+	b.Font = Enum.Font.GothamMedium
+	b.TextSize = 12
+	b.TextWrapped = true
+	b.Parent = parent
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 7)
+	b.MouseButton1Click:Connect(function() pcall(cb) end)
+	return b
+end
+
+local function criarInfo(parent, texto)
+	local l = Instance.new("TextLabel")
+	l.Size = UDim2.new(1, 0, 0, 0)
+	l.AutomaticSize = Enum.AutomaticSize.Y
+	l.BackgroundTransparency = 1
+	l.Text = texto
+	l.TextColor3 = Color3.fromRGB(170, 160, 200)
+	l.Font = Enum.Font.Gotham
+	l.TextSize = 11
+	l.TextWrapped = true
+	l.TextXAlignment = Enum.TextXAlignment.Left
+	l.Parent = parent
+	return l
+end
+
+local function criarCaixa(parent, placeholder, cor)
+	local b = Instance.new("TextBox")
+	b.Size = UDim2.new(1, 0, 0, 30)
+	b.BackgroundColor3 = cor or COR_ITEM
+	b.TextColor3 = COR_TXT
+	b.PlaceholderText = placeholder
+	b.PlaceholderColor3 = Color3.fromRGB(140, 130, 170)
+	b.Font = Enum.Font.Gotham
+	b.TextSize = 12
+	b.ClearTextOnFocus = false
+	b.Parent = parent
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 7)
+	return b
+end
+
+--============= PLAYER =============--
+local catPlayer = novaCategoria("PLAYER")
+local setVel = criarToggle(catPlayer, "Velocidade x3.75 (" .. CONFIG.WalkSpeed .. ")", "vel", setVelocidade)
+local setPul = criarToggle(catPlayer, "Pulo Alto (" .. CONFIG.JumpPower .. ")", "pulo", setPulo)
+criarToggle(catPlayer, "Pulo Infinito", "puloInf", function(v) ESTADO.puloInf = v end)
+local setNoc = criarToggle(catPlayer, "Noclip", "noclip", setNoclip)
+local setVoa = criarToggle(catPlayer, "Voo (WASD + Space/Shift)", "voo", setFly)
+local setEsp = criarToggle(catPlayer, "ESP (destacar players)", "esp", setESP)
+criarToggle(catPlayer, "Anti-AFK", "antiAfk", function(v) ESTADO.antiAfk = v end)
+
+UserInputService.JumpRequest:Connect(function()
+	if ESTADO.puloInf then
+		local h = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+		if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
+	end
+end)
+
+--============= PLAYERS =============--
+local catPlayers = novaCategoria("PLAYERS")
+local selecionados = {}
+
+criarToggle(catPlayers, "Aplicar VIP em TODOS", "vipTodos", function(v)
+	if v then for _, p in ipairs(Players:GetPlayers()) do pcall(aplicarVip, p) end end
+end)
+
+criarInfo(catPlayers, "Toque para selecionar quem recebe VIP:")
+
+local listaFrame = Instance.new("ScrollingFrame")
+listaFrame.Size = UDim2.new(1, 0, 0, 108)
+listaFrame.BackgroundColor3 = Color3.fromRGB(26, 22, 38)
+listaFrame.BorderSizePixel = 0
+listaFrame.ScrollBarThickness = 4
+listaFrame.ScrollBarImageColor3 = COR_ON
+listaFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+listaFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+listaFrame.Parent = catPlayers
+Instance.new("UICorner", listaFrame).CornerRadius = UDim.new(0, 7)
+local layLista = Instance.new("UIListLayout")
+layLista.Padding = UDim.new(0, 3)
+layLista.Parent = listaFrame
+local padLista = Instance.new("UIPadding")
+padLista.PaddingLeft = UDim.new(0, 4)
+padLista.PaddingRight = UDim.new(0, 4)
+padLista.PaddingTop = UDim.new(0, 4)
+padLista.PaddingBottom = UDim.new(0, 4)
+padLista.Parent = listaFrame
+
+local linhas = {}
+local function montarLista()
+	for _, l in ipairs(linhas) do l:Destroy() end
+	linhas = {}
+	for _, p in ipairs(Players:GetPlayers()) do
+		local row = Instance.new("TextButton")
+		row.Size = UDim2.new(1, 0, 0, 26)
+		row.BackgroundColor3 = selecionados[p] and COR_ON or COR_ITEM
+		row.Text = (selecionados[p] and "  ✔ " or "  ○ ") .. p.Name
+		row.TextColor3 = COR_TXT
+		row.Font = Enum.Font.Gotham
+		row.TextSize = 12
+		row.TextXAlignment = Enum.TextXAlignment.Left
+		row.Parent = listaFrame
+		Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
+		row.MouseButton1Click:Connect(function()
+			selecionados[p] = not selecionados[p]
+			row.BackgroundColor3 = selecionados[p] and COR_ON or COR_ITEM
+			row.Text = (selecionados[p] and "  ✔ " or "  ○ ") .. p.Name
+		end)
+		table.insert(linhas, row)
+	end
+end
+montarLista()
+Players.PlayerAdded:Connect(function() task.wait(0.5) montarLista() end)
+Players.PlayerRemoving:Connect(function(p) selecionados[p] = nil task.wait(0.2) montarLista() end)
+
+criarBotao(catPlayers, "Selecionar Todos", function()
+	for _, p in ipairs(Players:GetPlayers()) do selecionados[p] = true end
+	montarLista()
+end)
+criarBotao(catPlayers, "Limpar Seleção", function()
+	selecionados = {}
+	montarLista()
+end)
+
+local boxNomePlayer = criarCaixa(catPlayers, "nome do player (copiar skin)")
+criarBotao(catPlayers, "Copiar Skin do Player", function()
+	local alvo = boxNomePlayer.Text
+	if alvo == "" then notif("Digite um nome", COR_OFF) return end
+	sendChat("paredaochar " .. alvo)
+	task.delay(0.6, function() sendChat("!skin " .. alvo) end)
+	notif("Pedindo skin de " .. alvo)
+end)
+
+--============= VIP =============--
+local catVip = novaCategoria("VIP")
+criarToggle(catVip, "Meu VIP (silencioso)", "vipSelf", function(v)
+	if v then aplicarVip(LP) vipRemotes() end
+end)
+criarBotao(catVip, "Liberar VIP para selecionados", function()
+	local n = 0
+	for p, marcado in pairs(selecionados) do
+		if marcado and p.Parent then aplicarVip(p) n += 1 end
+	end
+	vipRemotes()
+	notif(n > 0 and ("VIP liberado para " .. n .. " player(s)") or "Ninguém selecionado", n > 0 and COR_OK or COR_OFF)
+end, COR_ON)
+criarBotao(catVip, "Re-aplicar VIP agora", function() aplicarVip(LP) vipRemotes() notif("VIP reaplicado", COR_OK) end)
+
+--============= ADMIN ABUSE =============--
+local catAdmin = novaCategoria("ADMIN ABUSE")
+criarInfo(catAdmin, "Força o painel de admin a aparecer. Se o ícone aparecer mas não abrir, use ABRIR PAINEL ou a lista abaixo.")
+
+criarToggle(catAdmin, "Admin Abuse (forçar visível)", "admin", function(v)
+	if v then forcarAdmin() end
+end)
+
+criarBotao(catAdmin, "▶ ABRIR PAINEL (forçar + tocar)", function()
+	local abertos, tocados = abrirPainelAdmin()
+	forcarAdmin(true)
+	notif("Painéis abertos: " .. abertos .. " | Toques: " .. tocados, (abertos + tocados) > 0 and COR_OK or COR_OFF)
+end, COR_ON, 34)
+
+criarBotao(catAdmin, "Simular toque no ícone Admin", function()
+	local n = 0
+	for _, b in ipairs(acharBotoesPorTexto("admin", 6, true)) do
+		liberarBotao(b)
+		if cliqueVirtual(b) then n += 1 end
+		task.wait(0.3)
+	end
+	notif(n > 0 and (n .. " toque(s) enviados") or "Nenhum botão admin visível", n > 0 and COR_OK or COR_OFF)
+end)
+
+criarInfo(catAdmin, "Painéis encontrados (toque pra ligar/desligar):")
+
+local painelFrame = Instance.new("ScrollingFrame")
+painelFrame.Size = UDim2.new(1, 0, 0, 96)
+painelFrame.BackgroundColor3 = Color3.fromRGB(26, 22, 38)
+painelFrame.BorderSizePixel = 0
+painelFrame.ScrollBarThickness = 4
+painelFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+painelFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+painelFrame.Parent = catAdmin
+Instance.new("UICorner", painelFrame).CornerRadius = UDim.new(0, 7)
+local layPainel = Instance.new("UIListLayout")
+layPainel.Padding = UDim.new(0, 3)
+layPainel.Parent = painelFrame
+local padPainel = Instance.new("UIPadding")
+padPainel.PaddingLeft = UDim.new(0, 4)
+padPainel.PaddingRight = UDim.new(0, 4)
+padPainel.PaddingTop = UDim.new(0, 4)
+padPainel.PaddingBottom = UDim.new(0, 4)
+padPainel.Parent = painelFrame
+
+local function montarPaineis()
+	for _, l in ipairs(linhasPainel) do l:Destroy() end
+	linhasPainel = {}
+	paineisAchados = coletarPaineis()
+	if #paineisAchados == 0 then
+		local l = Instance.new("TextLabel")
+		l.Size = UDim2.new(1, 0, 0, 22)
+		l.BackgroundTransparency = 1
+		l.Text = "  (nenhum painel encontrado)"
+		l.TextColor3 = Color3.fromRGB(150, 140, 180)
+		l.Font = Enum.Font.Gotham
+		l.TextSize = 11
+		l.TextXAlignment = Enum.TextXAlignment.Left
+		l.Parent = painelFrame
+		table.insert(linhasPainel, l)
+		return
+	end
+	for _, p in ipairs(paineisAchados) do
+		local ligado = p:IsA("ScreenGui") and p.Enabled or (p:IsA("GuiObject") and p.Visible)
+		local row = Instance.new("TextButton")
+		row.Size = UDim2.new(1, 0, 0, 26)
+		row.BackgroundColor3 = ligado and COR_ON or COR_ITEM
+		row.Text = (ligado and "  ● " or "  ○ ") .. p.Name .. "  [" .. p.ClassName .. "]"
+		row.TextColor3 = COR_TXT
+		row.Font = Enum.Font.Gotham
+		row.TextSize = 11
+		row.TextXAlignment = Enum.TextXAlignment.Left
+		row.TextTruncate = Enum.TextTruncate.AtEnd
+		row.Parent = painelFrame
+		Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
+		row.MouseButton1Click:Connect(function()
+			pcall(function()
+				if p:IsA("ScreenGui") then p.Enabled = not p.Enabled
+				else p.Visible = not p.Visible end
+			end)
+			task.wait(0.05)
+			montarPaineis()
+		end)
+		table.insert(linhasPainel, row)
+	end
+end
+montarPaineis()
+
+criarBotao(catAdmin, "Re-escanear painéis", function() montarPaineis() notif(#paineisAchados .. " candidatos", COR_ON) end)
+
+--============= SKINS =============--
+local catSkins = novaCategoria("SKINS")
+local lblSkins = criarInfo(catSkins, "Skins mapeadas: 0")
+local function atualizarLblSkins()
+	lblSkins.Text = "Skins mapeadas: " .. skinsEncontradas
+end
+
+criarToggle(catSkins, "Destravar Skins (local)", "skins", function(v)
+	if v then unlockSkins() injetarNoInventario() atualizarLblSkins() notif(skinsEncontradas .. " skins destravadas", COR_OK) end
+end)
+criarToggle(catSkins, "Reforçar a cada 3s", "skinsLoop", function(v) ESTADO.skinsLoop = v end)
+criarBotao(catSkins, "Forçar compra via remotes", comprarSkins, Color3.fromRGB(70, 50, 130))
+criarBotao(catSkins, "Injetar Skins no Inventário", function()
+	local n = injetarNoInventario()
+	notif(n > 0 and (n .. " skins injetadas") or "Inventário não localizado", n > 0 and COR_OK or COR_OFF)
+end)
+criarBotao(catSkins, "Re-escanear Skins", function()
+	unlockSkins() atualizarLblSkins() notif(skinsEncontradas .. " skins mapeadas", COR_ON)
+end)
+
+--============= MÚSICA (DJ) =============--
+local catMus = novaCategoria("MÚSICA (DJ)")
+local lblMus = criarInfo(catMus, "Áudio: --")
+
+criarBotao(catMus, "▶ PULAR MÚSICA (grátis)", function()
+	local tocados, locais = pularMusica()
+	notif("Pulos: " .. tocados .. " remotes | " .. locais .. " áudios forçados", (tocados + locais) > 0 and COR_OK or COR_OFF)
+end, COR_ON, 34)
+
+criarToggle(catMus, "Auto-pular a cada 3s", "autoSkip", function(v) ESTADO.autoSkip = v end)
+
+local boxMus = criarCaixa(catMus, "nome da música (ex: MTG Canoa)")
+criarBotao(catMus, "Solicitar / Tocar música", function()
+	local n = solicitarMusica(boxMus.Text)
+	notif(n > 0 and ("Pedido enviado (" .. n .. " remotes)") or "Nada enviado", n > 0 and COR_OK or COR_OFF)
+end)
+criarBotao(catMus, "Atualizar info do áudio", function()
+	lblMus.Text = "Áudio: " .. infoMusicaAtual()
+end)
+criarBotao(catMus, "Simular toque em PULE (7 robux)", function()
+	local n = 0
+	for _, b in ipairs(acharBotoesPorTexto("pule", 4, true)) do
+		liberarBotao(b)
+		if cliqueVirtual(b) then n += 1 end
+		task.wait(0.4)
+	end
+	notif(n > 0 and (n .. " toques em PULE") or "Abra o painel do DJ primeiro", n > 0 and COR_OK or COR_OFF)
+end)
+
+--============= LOJA / GAMEPASS =============--
+local catLoja = novaCategoria("LOJA / GAMEPASS")
+criarInfo(catLoja, "Marca os itens como COMPRADO e tenta destravar o botão COMPRAR.")
+
+criarToggle(catLoja, "Marcar loja como comprada", "loja", function(v)
+	if v then destravarLoja() end
+end)
+criarBotao(catLoja, "▶ DESTRAVAR LOJA AGORA", function() destravarLoja() end, COR_ON, 34)
+criarBotao(catLoja, "Simular toque em COMPRAR", simularCompra)
+criarBotao(catLoja, "Abrir Loja do Roblox (Marketplace)", function()
+	pcall(function() MarketplaceService:PromptGamePassPurchase(LP, 0) end)
+	notif("Prompt enviado", COR_ON)
+end)
+
+--============= AMBIENTE =============--
+local catAmb = novaCategoria("AMBIENTE")
+criarToggle(catAmb, "Fullbright (sem escuro)", "fullbright", setFullbright)
+criarToggle(catAmb, "Sem Neblina", "semNeblina", function(v) Lighting.FogEnd = v and 1e6 or 1000 end)
+criarToggle(catAmb, "Sem Sombras", "semSombras", function(v) Lighting.GlobalShadows = not v end)
+criarBotao(catAmb, "Horário: Meio-dia", function() Lighting.ClockTime = 12 notif("12h") end)
+criarBotao(catAmb, "Horário: Noite", function() Lighting.ClockTime = 0 notif("0h") end)
+
+--============= COMANDOS =============--
+local catCmd = novaCategoria("COMANDOS")
+criarBotao(catCmd, "Mandar !help", function() sendChat("!help") end)
+criarBotao(catCmd, "Mandar !cmds", function() sendChat("!cmds") end)
+local boxCmd = criarCaixa(catCmd, "comando livre (ex: !dance)")
+boxCmd.FocusLost:Connect(function(enter)
+	if enter and boxCmd.Text ~= "" then sendChat(boxCmd.Text) boxCmd.Text = "" end
+end)
+
+--============= DIAGNÓSTICO =============--
+local catDiag = novaCategoria("DIAGNÓSTICO")
+criarInfo(catDiag, "Varre o Explorer e mapeia remotes, admin, loja, música, skins e GUIs.")
+
+criarBotao(catDiag, "▶ GERAR RELATÓRIO", function()
+	local txt = gerarDiagnostico(false)
+	RELATORIO = txt
+	notif("Relatório pronto (" .. #txt .. " chars)", COR_OK)
+end, COR_ON, 34)
+
+criarBotao(catDiag, "📋 COPIAR (resumido)", function() copiarRelatorio(true) end, Color3.fromRGB(60, 90, 140), 32)
+criarBotao(catDiag, "📋 COPIAR (completo)", function() copiarRelatorio(false) end, Color3.fromRGB(60, 90, 140), 32)
+criarBotao(catDiag, "💾 SALVAR .txt no dispositivo", function() salvarRelatorio(false) end, Color3.fromRGB(50, 110, 80), 32)
+criarBotao(catDiag, "🌐 EXPORTAR ONLINE (link)", exportarOnline, Color3.fromRGB(110, 80, 40), 32)
+criarBotao(catDiag, "🖨 Imprimir no Console (F9)", function()
+	if RELATORIO == "" then RELATORIO = gerarDiagnostico(false) end
+	print(RELATORIO)
+	notif("Enviado ao console", COR_OK)
+end)
+criarBotao(catDiag, "📡 Só listar remotes", function()
+	scanRemotes()
+	print("=== (original) " .. #REMOTES .. " remotes ===")
+	for _, r in ipairs(REMOTES) do print("  " .. r:GetFullName()) end
+	notif(#REMOTES .. " remotes no console")
+end)
+
+local boxRel = Instance.new("TextBox")
+boxRel.Size = UDim2.new(1, 0, 0, 140)
+boxRel.BackgroundColor3 = Color3.fromRGB(14, 12, 22)
+boxRel.TextColor3 = Color3.fromRGB(180, 240, 190)
+boxRel.Font = Enum.Font.Code
+boxRel.TextSize = 10
+boxRel.TextWrapped = true
+boxRel.TextXAlignment = Enum.TextXAlignment.Left
+boxRel.TextYAlignment = Enum.TextYAlignment.Top
+boxRel.MultiLine = true
+boxRel.ClearTextOnFocus = false
+boxRel.Text = "(aperte GERAR RELATÓRIO)"
+boxRel.Parent = catDiag
+Instance.new("UICorner", boxRel).CornerRadius = UDim.new(0, 7)
+
+criarBotao(catDiag, "👁 Mostrar relatório no painel", function()
+	if RELATORIO == "" then RELATORIO = gerarDiagnostico(true) end
+	boxRel.Text = RELATORIO
+	notif("Exibido (" .. #RELATORIO .. " chars)", COR_OK)
+end)
+
+--============= SOBRE =============--
+local catSobre = novaCategoria("SOBRE")
+criarInfo(catSobre, "(original) · Paredão Supremo\nby Venice · executor Delta\nPadrão: tudo OFF\nAtalho: F2 abre/fecha\n\nVIP, Skins e Loja agem no lado do cliente — o servidor continua sendo a fonte real. Se algo não responder, rode o diagnóstico e me manda o texto.")
+
+--============= APLICAR TUDO =============--
+btnTudo.MouseButton1Click:Connect(function()
+	scanRemotes()
+	aplicarVip(LP) vipRemotes()
+	setVel(true) setPul(true) setNoc(true) setEsp(true)
+	ESTADO.puloInf = true
+	unlockSkins() injetarNoInventario() atualizarLblSkins()
+	destravarLoja(true)
+	forcarAdmin(true)
+	notif("Tudo aplicado · " .. skinsEncontradas .. " skins", COR_OK)
+end)
+
+--============= MINIMIZAR / FECHAR =============--
+local minimizado = false
+btnMin.MouseButton1Click:Connect(function()
+	minimizado = not minimizado
+	scroll.Visible = not minimizado
+	btnTudo.Visible = not minimizado
+	TweenService:Create(frame, TweenInfo.new(0.18), {
+		Size = minimizado and UDim2.new(0, 272, 0, 44) or UDim2.new(0, 272, 0, 470)
+	}):Play()
+end)
+
+local abrir = Instance.new("TextButton")
+abrir.Size = UDim2.new(0, 46, 0, 46)
+abrir.Position = UDim2.new(0, 14, 0, 70)
+abrir.BackgroundColor3 = COR_ON
+abrir.Text = "O"
+abrir.TextColor3 = Color3.fromRGB(255, 255, 255)
+abrir.Font = Enum.Font.GothamBold
+abrir.TextSize = 18
+abrir.Visible = false
+abrir.Parent = gui
+Instance.new("UICorner", abrir).CornerRadius = UDim.new(1, 0)
+
+btnFechar.MouseButton1Click:Connect(function() frame.Visible = false abrir.Visible = true end)
+abrir.MouseButton1Click:Connect(function() frame.Visible = true abrir.Visible = false end)
+
+UserInputService.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	if input.KeyCode == Enum.KeyCode.F2 then
+		frame.Visible = not frame.Visible
+		abrir.Visible = not frame.Visible
+	end
+end)
+
+--============================= LOOPS / RESPAWN =========================--
+task.spawn(function()
+	while task.wait(3) do
+		if ESTADO.admin then forcarAdmin(true) end
+		if ESTADO.skinsLoop then unlockSkins() injetarNoInventario() atualizarLblSkins() end
+		if ESTADO.autoSkip then pularMusica() end
+		if ESTADO.loja then destravarLoja(true) end
+	end
+end)
+
+LP.CharacterAdded:Connect(function(c)
+	c:WaitForChild("Humanoid")
+	task.wait(0.8)
+	if ESTADO.vel then setVelocidade(true) end
+	if ESTADO.pulo then setPulo(true) end
+	if ESTADO.noclip then setNoclip(true) end
+	if ESTADO.voo then setFly(true) end
+	if ESTADO.esp then setESP(true) end
+	if ESTADO.vipSelf then aplicarVip(LP) end
+end)
+
+notif("(original) carregado · tudo OFF", COR_ON)
