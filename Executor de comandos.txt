@@ -1,0 +1,1382 @@
+--[[================================================================
+  ██████╗  PAINEL SUPREMO  v2.0  •  PAREDÃO SUPREMO (Roblox)
+  Executor : Delta Force (Android) — Luau
+  Recursos : toggle por clique, cores de segurança, bypass de
+             permissão, +50 comandos, auto-descoberta de remotes,
+             drag touch, responsivo, toasts, pcall em tudo.
+  Execução : colar no Delta Force  OU  loadstring(...)()
+================================================================]]
+
+--=================================================================
+-- 0) GUARDS E SERVIÇOS
+--=================================================================
+local VERSION = "2.0.0"
+
+local Players           = game:GetService("Players")
+local RunService        = game:GetService("RunService")
+local UserInputService  = game:GetService("UserInputService")
+local TweenService      = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Lighting          = game:GetService("Lighting")
+local SoundService      = game:GetService("SoundService")
+local TextChatService   = game:GetService("TextChatService")
+
+local LP = Players.LocalPlayer
+if not LP then return end
+
+if getgenv and getgenv().SUPREMO_UNLOAD then pcall(getgenv().SUPREMO_UNLOAD) end
+
+--=================================================================
+-- 1) TEMA E CONFIGURAÇÃO
+--=================================================================
+local CONFIG = {
+    panelSize = Vector2.new(420, 620),
+    floatSize = 34,                -- ícone minimizado (30–40 px)
+    accent    = Color3.fromRGB(124, 92, 255),
+    accent2   = Color3.fromRGB(56, 214, 255),
+    good      = Color3.fromRGB(64, 214, 138),
+    bad       = Color3.fromRGB(255, 92, 110),
+    warn      = Color3.fromRGB(255, 190, 70),
+    info      = Color3.fromRGB(96, 176, 255),
+    bg        = Color3.fromRGB(12, 14, 20),
+    bg2       = Color3.fromRGB(18, 21, 30),
+    card      = Color3.fromRGB(25, 29, 40),
+    text      = Color3.fromRGB(236, 239, 248),
+    sub       = Color3.fromRGB(140, 148, 170),
+    -- cores de segurança por tipo
+    rowToggleOff = Color3.fromRGB(25, 29, 40),
+    rowToggleOn  = Color3.fromRGB(20, 56, 40),
+    rowParam     = Color3.fromRGB(34, 27, 52),
+    rowAction    = Color3.fromRGB(22, 38, 56),
+    prefixes = { ":" },            -- prefixos de chat usados pelo bridge
+}
+
+local FONT_B, FONT_M, FONT_R = Enum.Font.GothamBold, Enum.Font.GothamMedium, Enum.Font.Gotham
+local SOUND_CLICK = "rbxassetid://6895079853"
+
+--=================================================================
+-- 2) HELPERS
+--=================================================================
+local function new(class, props, children)
+    local inst = Instance.new(class)
+    if props then
+        local parent = props.Parent
+        for k, v in pairs(props) do
+            if k ~= "Parent" then pcall(function() inst[k] = v end) end
+        end
+        if parent then inst.Parent = parent end
+    end
+    if children then for _, c in ipairs(children) do c.Parent = inst end end
+    return inst
+end
+
+local function corner(inst, r) return new("UICorner", { CornerRadius = UDim.new(0, r or 10), Parent = inst }) end
+local function stroke(inst, c, t, tr)
+    return new("UIStroke", { Color = c or CONFIG.card, Thickness = t or 1, Transparency = tr or 0.4,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = inst })
+end
+local function grad(inst, c1, c2, rot)
+    return new("UIGradient", { Color = ColorSequence.new(c1 or CONFIG.accent, c2 or CONFIG.accent2),
+        Rotation = rot or 0, Parent = inst })
+end
+local function pad(inst, t, r, b, l)
+    return new("UIPadding", { PaddingTop = UDim.new(0, t or 0), PaddingRight = UDim.new(0, r or t or 0),
+        PaddingBottom = UDim.new(0, b or t or 0), PaddingLeft = UDim.new(0, l or r or t or 0), Parent = inst })
+end
+local function tween(inst, time, props)
+    local t = TweenService:Create(inst, TweenInfo.new(time or 0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), props)
+    t:Play(); return t
+end
+local function playClick()
+    pcall(function()
+        local s = new("Sound", { SoundId = SOUND_CLICK, Volume = 0.4, Parent = SoundService })
+        s:Play(); task.delay(1, function() s:Destroy() end)
+    end)
+end
+
+local function getChar()
+    local char = LP.Character or LP.CharacterAdded:Wait()
+    return char, char:FindFirstChildOfClass("Humanoid"), char:FindFirstChild("HumanoidRootPart")
+end
+
+local function getMoveVector()
+    local ok, ctrl = pcall(function()
+        return require(LP.PlayerScripts:WaitForChild("PlayerModule")):GetControls()
+    end)
+    if ok and ctrl and ctrl.GetMoveVector then
+        local ok2, v = pcall(function() return ctrl:GetMoveVector() end)
+        if ok2 and v then return v end
+    end
+    return Vector3.zero
+end
+
+local function findPlayer(query)
+    if not query or query == "" then return nil end
+    local q = query:lower()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP and (p.Name:lower() == q or p.DisplayName:lower() == q or p.Name:lower():find(q, 1, true)) then
+            return p
+        end
+    end
+    return nil
+end
+
+--=================================================================
+-- 3) ESTADO E LOOPS
+--=================================================================
+local State = {
+    fly = false, noclip = false, infinitejump = false, god = false, invisible = false,
+    freeze = false, ragdoll = false, spin = false, autoheal = false, headless = false,
+    sit = false, lowgfx = false, xray = false, nametags = false, fullbright = false,
+    nofog = false, esp = false, antiafk = false, forceperm = false,
+    walkSpeed = 16, jumpPower = 50, hipHeight = 2, gravity = 196.2, fov = 70,
+    chatPrefix = ":",
+}
+local Loops = {}
+local Backup = {}
+
+local function killLoop(k)
+    if Loops[k] then pcall(function() Loops[k]:Disconnect() end) Loops[k] = nil end
+end
+
+--=================================================================
+-- 4) BRIDGE — BYPASS DE PERMISSÃO / REMOTES / CHAT
+--=================================================================
+local Bridge = { remotes = {}, funcs = {}, spoofed = {}, scanDone = false }
+
+-- 4.1 Varredura de remotes candidatos a sistema de comando
+function Bridge.scan()
+    Bridge.remotes, Bridge.funcs = {}, {}
+    local keys = { "command", "cmd", "comando", "admin", "painel", "panel", "action",
+                   "acao", "ação", "paredao", "paredão", "exec", "cheat", "evento" }
+    for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
+        if d:IsA("RemoteEvent") then
+            local n = d.Name:lower()
+            for _, k in ipairs(keys) do
+                if n:find(k, 1, true) then table.insert(Bridge.remotes, d); break end
+            end
+        elseif d:IsA("RemoteFunction") then
+            local n = d.Name:lower()
+            for _, k in ipairs(keys) do
+                if n:find(k, 1, true) then table.insert(Bridge.funcs, d); break end
+            end
+        end
+    end
+    Bridge.scanDone = true
+    return #Bridge.remotes + #Bridge.funcs
+end
+
+-- 4.2 Spoof de permissão client-side (attributes + leaderstats + métodos)
+function Bridge.spoof()
+    local done = {}
+    local attrNames = { "Admin", "IsAdmin", "Owner", "IsOwner", "VIP", "Vip", "Rank",
+                        "RankLevel", "PermissionLevel", "Permission", "Staff", "Mod", "Access", "Level" }
+    for _, a in ipairs(attrNames) do
+        pcall(function()
+            local low = a:lower()
+            if low:find("level") or low:find("rank") then
+                LP:SetAttribute(a, 999)
+            else
+                LP:SetAttribute(a, true)
+            end
+            done[#done + 1] = a
+        end)
+    end
+
+    local ls = LP:FindFirstChild("leaderstats")
+    if ls then
+        for _, v in ipairs(ls:GetChildren()) do
+            if (v:IsA("IntValue") or v:IsA("NumberValue")) then
+                local n = v.Name:lower()
+                if n:find("rank") or n:find("level") or n:find("admin") or n:find("perm") then
+                    v.Value = 999
+                    done[#done + 1] = "leaderstats." .. v.Name
+                end
+            end
+        end
+    end
+
+    -- Shadow de métodos usados em checagem client-side
+    pcall(function() LP.GetRankInGroup  = function() return 255 end end)
+    pcall(function() LP.IsInGroup       = function() return true end end)
+    pcall(function() LP.GetRoleInGroup  = function() return "Owner" end end)
+
+    Bridge.spoofed = done
+    return #done
+end
+
+function Bridge.unspoof()
+    pcall(function() LP.GetRankInGroup = nil end)
+    pcall(function() LP.IsInGroup = nil end)
+    pcall(function() LP.GetRoleInGroup = nil end)
+end
+
+-- 4.3 Envio agressivo: remotes + chat (fallback garantido)
+function Bridge.chat(msg)
+    local ok = pcall(function()
+        ReplicatedStorage.DefaultChatSystemChatEvents.SayMessageRequest:FireServer(msg, "All")
+    end)
+    if ok then return true end
+    return pcall(function()
+        TextChatService.ChatInputBarConfiguration.TargetTextChannel:SendAsync(msg)
+    end)
+end
+
+function Bridge.send(cmdName, args)
+    if not Bridge.scanDone then Bridge.scan() end
+    local payload = table.concat(args or {}, " ")
+    local full = cmdName .. (payload ~= "" and (" " .. payload) or "")
+    local hits = 0
+
+    -- a) FireServer em todos os remotes candidatos (formas comuns)
+    for _, r in ipairs(Bridge.remotes) do
+        pcall(function() r:FireServer(full) end)
+        pcall(function() r:FireServer(cmdName, table.unpack(args or {})) end)
+        hits = hits + 1
+    end
+
+    -- b) Chat com prefixo (sistema de comando padrão)
+    for _, pre in ipairs(CONFIG.prefixes) do
+        Bridge.chat(pre .. full)
+    end
+
+    return hits
+end
+
+--=================================================================
+-- 5) TOASTS E LOG
+--=================================================================
+local gui
+local toastHolder, logLabel
+
+local function getGuiParent()
+    if gethui then local ok, h = pcall(gethui); if ok and h then return h end end
+    local ok2, core = pcall(function() return game:GetService("CoreGui") end)
+    if ok2 and core then
+        local ok3 = pcall(function() return #core:GetChildren() end)
+        if ok3 then return core end
+    end
+    return LP:WaitForChild("PlayerGui")
+end
+
+local function toast(msg, kind)
+    kind = kind or "info"
+    local color = CONFIG[kind] or CONFIG.info
+    local box = new("Frame", {
+        Size = UDim2.new(0, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.XY,
+        BackgroundColor3 = CONFIG.card, BackgroundTransparency = 1, Parent = toastHolder,
+    })
+    corner(box, 10); stroke(box, color, 1, 0.25); pad(box, 9, 12, 9, 12)
+    new("Frame", { Size = UDim2.new(0, 3, 1, 0), BackgroundColor3 = color, BorderSizePixel = 0, Parent = box })
+    local lbl = new("TextLabel", {
+        Size = UDim2.new(0, 250, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
+        Font = FONT_M, TextSize = 13, TextColor3 = CONFIG.text, TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left, Text = msg, Parent = box,
+    })
+    pad(lbl, 0, 0, 0, 10)
+    tween(box, 0.18, { BackgroundTransparency = 0.05 })
+    task.delay(2.6, function()
+        tween(box, 0.25, { BackgroundTransparency = 1 })
+        task.delay(0.3, function() box:Destroy() end)
+    end)
+end
+
+local LogLines = {}
+local function log(kind, msg)
+    table.insert(LogLines, msg)
+    if #LogLines > 40 then table.remove(LogLines, 1) end
+    if logLabel then
+        local txt = {}
+        for i = math.max(1, #LogLines - 2), #LogLines do table.insert(txt, "› " .. LogLines[i]) end
+        logLabel.Text = table.concat(txt, "\n")
+    end
+end
+
+--=================================================================
+-- 6) REGISTRO DE COMANDOS (tabela centralizada)
+--=================================================================
+local Commands, Rows = {}, {}
+
+local function reg(def)
+    def.aliases = def.aliases or {}
+    table.insert(Commands, def)
+    return def
+end
+
+-- Atalho para toggles com estado + loop
+local function regToggle(name, cat, desc, key, onFn, offFn)
+    return reg({
+        name = name, cat = cat, desc = desc, type = "toggle",
+        get = function() return State[key] end,
+        set = function(on)
+            State[key] = on
+            if on then onFn() else offFn() end
+        end,
+    })
+end
+
+local function regParam(name, cat, desc, args, fn, aliases)
+    return reg({ name = name, cat = cat, desc = desc, type = "param", args = args, run = fn, aliases = aliases })
+end
+
+local function regAction(name, cat, desc, fn, aliases)
+    return reg({ name = name, cat = cat, desc = desc, type = "action", run = fn, aliases = aliases })
+end
+
+-------------------------------------------------------------------
+-- 6.1 PLAYER — TOGGLES
+-------------------------------------------------------------------
+regToggle("fly|voar", "Player", "Permite voar livremente pelo mapa (WASD/joystick).", "fly",
+function()
+    local _, hum, hrp = getChar()
+    if not hrp or not hum then return end
+    local bv = new("BodyVelocity", { Name = "SupremoFly", MaxForce = Vector3.new(1,1,1) * 1e5,
+        Velocity = Vector3.zero, Parent = hrp })
+    hum.PlatformStand = true
+    Loops.fly = RunService.RenderStepped:Connect(function()
+        local cam = workspace.CurrentCamera
+        if not cam or not hrp.Parent then return end
+        local mv = getMoveVector()
+        local dir = (mv.Magnitude > 0) and (cam.CFrame * Vector3.new(mv.X, 0, mv.Z)) or Vector3.zero
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.new(0, 1, 0) end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= Vector3.new(0, 1, 0) end
+        bv.Velocity = (dir.Magnitude > 0) and (dir.Unit * 75) or Vector3.zero
+    end)
+end,
+function()
+    local _, hum, hrp = getChar()
+    killLoop("fly")
+    if hrp then local bv = hrp:FindFirstChild("SupremoFly"); if bv then bv:Destroy() end end
+    if hum then hum.PlatformStand = false end
+end)
+
+regToggle("noclip", "Player", "Atravessa paredes e objetos sólidos.", "noclip",
+function()
+    Loops.noclip = RunService.Stepped:Connect(function()
+        local char = LP.Character
+        if not char then return end
+        for _, p in ipairs(char:GetDescendants()) do
+            if p:IsA("BasePart") then p.CanCollide = false end
+        end
+    end)
+end,
+function()
+    killLoop("noclip")
+    local char = LP.Character
+    if char then
+        for _, p in ipairs(char:GetDescendants()) do
+            if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" then p.CanCollide = true end
+        end
+    end
+end)
+
+regToggle("infinitejump|puloinfinito", "Player", "Pulo infinito — pula mesmo no ar.", "infinitejump",
+function()
+    Loops.infjump = UserInputService.JumpRequest:Connect(function()
+        local _, hum = getChar()
+        if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+    end)
+end, function() killLoop("infjump") end)
+
+regToggle("godmode|god", "Player", "Vida infinita (client-side forçado).", "god",
+function()
+    Loops.god = RunService.Heartbeat:Connect(function()
+        local _, hum = getChar()
+        if hum then hum.MaxHealth = math.huge; hum.Health = math.huge end
+    end)
+end,
+function()
+    killLoop("god")
+    local _, hum = getChar()
+    if hum then hum.MaxHealth = 100; hum.Health = 100 end
+end)
+
+regToggle("invisibility|invis", "Player", "Deixa o personagem invisível.", "invisible",
+function()
+    local char = LP.Character
+    if not char then return end
+    for _, p in ipairs(char:GetDescendants()) do
+        if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" then p.Transparency = 1
+        elseif p:IsA("Decal") or p:IsA("Texture") then p.Transparency = 1 end
+    end
+end,
+function()
+    local char = LP.Character
+    if not char then return end
+    for _, p in ipairs(char:GetDescendants()) do
+        if p:IsA("BasePart") then p.Transparency = 0
+        elseif p:IsA("Decal") or p:IsA("Texture") then p.Transparency = 0 end
+    end
+end)
+
+regToggle("freeze|congelar", "Player", "Congela o personagem no lugar (âncora).", "freeze",
+function()
+    local _, _, hrp = getChar()
+    if hrp then Backup.freezePos = hrp.CFrame; hrp.Anchored = true end
+end,
+function()
+    local _, _, hrp = getChar()
+    if hrp then hrp.Anchored = false end
+end)
+
+regToggle("ragdoll", "Player", "Personagem mole/desmontado (física).", "ragdoll",
+function()
+    local _, hum = getChar()
+    if hum then hum:ChangeState(Enum.HumanoidStateType.Physics) end
+end,
+function()
+    local _, hum = getChar()
+    if hum then hum:ChangeState(Enum.HumanoidStateType.GettingUp) end
+end)
+
+regToggle("spin|girar", "Player", "Gira o personagem em torno do próprio eixo.", "spin",
+function()
+    Loops.spin = RunService.RenderStepped:Connect(function(dt)
+        local _, _, hrp = getChar()
+        if hrp then hrp.CFrame = hrp.CFrame * CFrame.Angles(0, math.rad(360 * dt), 0) end
+    end)
+end, function() killLoop("spin") end)
+
+regToggle("autoheal|autocura", "Player", "Recupera vida automaticamente.", "autoheal",
+function()
+    Loops.autoheal = RunService.Heartbeat:Connect(function()
+        local _, hum = getChar()
+        if hum and hum.Health < hum.MaxHealth then hum.Health = hum.MaxHealth end
+    end)
+end, function() killLoop("autoheal") end)
+
+regToggle("headless|semcabeca", "Player", "Esconde a cabeça e acessórios.", "headless",
+function()
+    local char = LP.Character
+    if not char then return end
+    local head = char:FindFirstChild("Head")
+    if head then head.Transparency = 1 end
+    for _, d in ipairs(char:GetDescendants()) do
+        if d:IsA("Accoutrement") or d:IsA("Hat") then d:FindFirstChild("Handle") and (d.Handle.Transparency = 1) end
+    end
+end,
+function()
+    local char = LP.Character
+    if not char then return end
+    local head = char:FindFirstChild("Head")
+    if head then head.Transparency = 0 end
+end)
+
+regToggle("sit|sentar", "Player", "Senta ou levanta o personagem.", "sit",
+function()
+    local _, hum = getChar()
+    if hum then hum.Sit = true end
+end,
+function()
+    local _, hum = getChar()
+    if hum then hum.Sit = false end
+end)
+
+-------------------------------------------------------------------
+-- 6.2 UTIL — TOGGLES VISUAIS
+-------------------------------------------------------------------
+regToggle("esp", "Util", "Destaca jogadores com contorno colorido e nome.", "esp",
+function()
+    local function apply(p)
+        local c = p.Character
+        if not c or p == LP then return end
+        local hrp = c:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+        if not c:FindFirstChild("SupremoESP") then
+            new("Highlight", { Name = "SupremoESP", FillColor3 = CONFIG.accent, OutlineColor3 = CONFIG.accent2,
+                FillTransparency = 0.6, OutlineTransparency = 0, Parent = c })
+        end
+    end
+    for _, p in ipairs(Players:GetPlayers()) do apply(p) end
+    Loops.espAdded = Players.PlayerAdded:Connect(apply)
+    Loops.espRemoved = Players.PlayerRemoving:Connect(function(p)
+        local c = p.Character
+        if c then local h = c:FindFirstChild("SupremoESP"); if h then h:Destroy() end end
+    end)
+end,
+function()
+    killLoop("espAdded"); killLoop("espRemoved")
+    for _, p in ipairs(Players:GetPlayers()) do
+        local c = p.Character
+        if c then local h = c:FindFirstChild("SupremoESP"); if h then h:Destroy() end end
+    end
+end)
+
+regToggle("nametags|nomes", "Util", "Mostra o nome dos jogadores acima da cabeça.", "nametags",
+function()
+    local function apply(p)
+        local c = p.Character
+        if not c or p == LP then return end
+        local hrp = c:FindFirstChild("HumanoidRootPart")
+        if not hrp or c:FindFirstChild("SupremoTag") then return end
+        local bb = new("BillboardGui", { Name = "SupremoTag", Size = UDim2.new(0, 100, 0, 22),
+            StudsOffset = Vector3.new(0, 3, 0), AlwaysOnTop = true, Parent = hrp })
+        new("TextLabel", { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Font = FONT_B,
+            TextSize = 13, TextColor3 = CONFIG.accent2, TextStrokeTransparency = 0.4, Text = p.Name, Parent = bb })
+    end
+    for _, p in ipairs(Players:GetPlayers()) do apply(p) end
+    Loops.tagAdded = Players.PlayerAdded:Connect(apply)
+end,
+function()
+    killLoop("tagAdded")
+    for _, p in ipairs(Players:GetPlayers()) do
+        local c = p.Character
+        if c then local b = c:FindFirstChild("SupremoTag"); if b then b:Destroy() end end
+    end
+end)
+
+regToggle("fullbright|fb", "Util", "Iluminação total — mapa sempre claro.", "fullbright",
+function()
+    Backup.light = { Brightness = Lighting.Brightness, ClockTime = Lighting.ClockTime,
+        Ambient = Lighting.Ambient, OutdoorAmbient = Lighting.OutdoorAmbient,
+        FogEnd = Lighting.FogEnd, GlobalShadows = Lighting.GlobalShadows }
+    Lighting.Brightness = 3; Lighting.ClockTime = 14
+    Lighting.Ambient = Color3.fromRGB(165,165,165)
+    Lighting.OutdoorAmbient = Color3.fromRGB(165,165,165)
+    Lighting.FogEnd = 1e5; Lighting.GlobalShadows = false
+end,
+function()
+    if Backup.light then for k, v in pairs(Backup.light) do pcall(function() Lighting[k] = v end) end end
+end)
+
+regToggle("nofog|semnevoa", "Util", "Remove a névoa e o fog do mapa.", "nofog",
+function()
+    Backup.fog = { FogEnd = Lighting.FogEnd, FogStart = Lighting.FogStart }
+    Lighting.FogEnd = 1e6; Lighting.FogStart = 1e6
+end,
+function()
+    if Backup.fog then
+        Lighting.FogEnd = Backup.fog.FogEnd; Lighting.FogStart = Backup.fog.FogStart
+    end
+end)
+
+regToggle("xray", "Util", "Deixa o cenário translúcido para ver através.", "xray",
+function()
+    Loops.xray = RunService.Heartbeat:Connect(function()
+        local char = LP.Character
+        for _, d in ipairs(workspace:GetDescendants()) do
+            if d:IsA("BasePart") and (not char or not d:IsDescendantOf(char)) then
+                if d.LocalTransparencyModifier == 0 then d.LocalTransparencyModifier = 0.72 end
+            end
+        end
+    end)
+end,
+function()
+    killLoop("xray")
+    for _, d in ipairs(workspace:GetDescendants()) do
+        if d:IsA("BasePart") then d.LocalTransparencyModifier = 0 end
+    end
+end)
+
+regToggle("lowgraphics|fpsboost", "Util", "Reduz gráficos ao mínimo para ganhar FPS.", "lowgfx",
+function()
+    pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
+    Lighting.GlobalShadows = false
+end,
+function()
+    pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Automatic end)
+end)
+
+regToggle("antiafk", "Util", "Evita kick por inatividade (20 min).", "antiafk",
+function()
+    Loops.afk = LP.Idled:Connect(function()
+        local vu = game:GetService("VirtualUser")
+        vu:CaptureController(); vu:ClickButton2(Vector2.new())
+    end)
+end, function() killLoop("afk") end)
+
+regToggle("forceperm|forcarperm", "Admin", "Spoofa permissões locais (Admin/Owner/Rank) para liberar comandos.", "forceperm",
+function()
+    local n = Bridge.spoof()
+    toast(n .. " permissões spoofadas", "good")
+end,
+function()
+    Bridge.unspoof()
+    toast("Spoof de permissão removido", "warn")
+end)
+
+-------------------------------------------------------------------
+-- 6.3 PLAYER — PARAMETRIZADOS
+-------------------------------------------------------------------
+regParam("speed|walkspeed|ws", "Player", "Define a velocidade de caminhada.", "<número>", function(a)
+    local _, hum = getChar()
+    if not hum then return end
+    State.walkSpeed = tonumber(a[1]) or 16
+    hum.WalkSpeed = State.walkSpeed
+    toast("WalkSpeed = " .. State.walkSpeed, "good")
+end)
+
+regParam("jump|jumppower|jp", "Player", "Define a força do pulo.", "<número>", function(a)
+    local _, hum = getChar()
+    if not hum then return end
+    State.jumpPower = tonumber(a[1]) or 50
+    pcall(function() hum.UseJumpPower = true end)
+    hum.JumpPower = State.jumpPower
+    pcall(function() hum.JumpHeight = State.jumpPower / 7.2 end)
+    toast("JumpPower = " .. State.jumpPower, "good")
+end)
+
+regParam("hipheight|hip", "Player", "Ajusta a altura do quadril.", "<número>", function(a)
+    local _, hum = getChar()
+    if not hum then return end
+    State.hipHeight = tonumber(a[1]) or 2
+    hum.HipHeight = State.hipHeight
+    toast("HipHeight = " .. State.hipHeight, "good")
+end)
+
+-- size com BYPASS: aplica client-side forçado + envia ao servidor
+regParam("size|escala|tamanho", "Player", "Escala o personagem — funciona mesmo SEM permissão (forçado local + servidor).", "<número>", function(a)
+    local v = tonumber(a[1]) or 1
+    local char = LP.Character
+    if not char then return end
+    for _, n in ipairs({ "BodyHeightScale", "BodyWidthScale", "BodyDepthScale", "HeadScale", "BodyTypeScale",
+                         "BodyProportionScale" }) do
+        local o = char:FindFirstChild(n)
+        if not o then o = new("NumberValue", { Name = n, Parent = char }) end
+        o.Value = (n == "BodyProportionScale" or n == "BodyTypeScale") and 0 or v
+    end
+    -- força no servidor (ignora checagem de admin)
+    Bridge.send("size", { tostring(v) })
+    toast("Escala " .. v .. " aplicada (bypass de permissão)", "good")
+end)
+
+regParam("headsize|cabeca", "Player", "Ajusta o tamanho da cabeça.", "<número>", function(a)
+    local char = LP.Character
+    if not char then return end
+    local h = char:FindFirstChild("Head")
+    if not h then return end
+    local v = tonumber(a[1]) or 1
+    local mesh = h:FindFirstChildOfClass("SpecialMesh")
+    if not mesh then mesh = new("SpecialMesh", { MeshType = Enum.MeshType.Head, Parent = h }) end
+    mesh.Scale = Vector3.new(v, v, v)
+    toast("HeadScale = " .. v, "good")
+end)
+
+regParam("health|vida|sethealth", "Player", "Define a vida (e vida máxima) do personagem.", "<número>", function(a)
+    local _, hum = getChar()
+    if not hum then return end
+    local v = tonumber(a[1]) or 100
+    hum.MaxHealth = v; hum.Health = v
+    Bridge.send("health", { tostring(v) })
+    toast("Vida = " .. v, "good")
+end)
+
+regParam("damage|dano", "Admin", "Aplica dano em um jogador.", "<jogador> <dano>", function(a)
+    local target = findPlayer(a[1])
+    local dmg = tonumber(a[2]) or 25
+    if target and target.Character then
+        local hum = target.Character:FindFirstChildOfClass("Humanoid")
+        if hum then hum:TakeDamage(dmg) end
+        toast(target.Name .. " levou " .. dmg .. " de dano", "good")
+    end
+    Bridge.send("damage", { a[1] or "", tostring(dmg) })
+end)
+
+regParam("kill|matar", "Player", "Mata você mesmo ou um jogador alvo.", "[jogador]", function(a)
+    local target = a[1] and findPlayer(a[1]) or nil
+    local char = target and target.Character or LP.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then hum.Health = 0 end
+    Bridge.send("kill", a[1] and { a[1] } or {})
+    toast("Kill → " .. (target and target.Name or "self"), "good")
+end)
+
+regParam("teleport|tp", "Player", "Teleporta para jogador ou coordenadas x,y,z.", "<jogador | x,y,z>", function(a)
+    local _, _, hrp = getChar()
+    if not hrp then return end
+    local raw = table.concat(a, " ")
+    local x, y, z = raw:match("([%-%d%.]+)%s*,%s*([%-%d%.]+)%s*,%s*([%-%d%.]+)")
+    if x then
+        hrp.CFrame = CFrame.new(tonumber(x), tonumber(y), tonumber(z))
+        return toast("TP → " .. raw, "good")
+    end
+    local p = findPlayer(raw)
+    if p and p.Character then
+        local t = p.Character:FindFirstChild("HumanoidRootPart")
+        if t then hrp.CFrame = t.CFrame * CFrame.new(0, 0, 3) end
+        return toast("TP → " .. p.Name, "good")
+    end
+    toast("Alvo não encontrado", "bad")
+end)
+
+regParam("goto|ir", "Admin", "Vai até um jogador pelo nome.", "<jogador>", function(a)
+    local _, _, hrp = getChar()
+    local p = findPlayer(a[1])
+    if hrp and p and p.Character then
+        local t = p.Character:FindFirstChild("HumanoidRootPart")
+        if t then hrp.CFrame = t.CFrame * CFrame.new(0, 0, 3) end
+        toast("Goto → " .. p.Name, "good")
+    else
+        toast("Jogador não encontrado", "bad")
+    end
+end)
+
+regParam("bring|trazer", "Admin", "Traz um jogador até você (via servidor).", "<jogador>", function(a)
+    Bridge.send("bring", { a[1] or "" })
+    toast("Bring → " .. (a[1] or "?"), "info")
+end)
+
+regParam("explode|explodir", "Admin", "Cria uma explosão no alvo ou em você.", "[jogador]", function(a)
+    local p = a[1] and findPlayer(a[1])
+    local char = p and p.Character or LP.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        local e = new("Explosion", { Position = hrp.Position, BlastRadius = 12,
+            DestroyJointRadiusPercent = 0.6, Parent = workspace })
+        task.delay(1, function() e:Destroy() end)
+    end
+    Bridge.send("explode", a[1] and { a[1] } or {})
+    toast("Explosão!", "good")
+end)
+
+regParam("kick|expulsar", "Admin", "Expulsa um jogador do servidor.", "<jogador> [motivo]", function(a)
+    local p = findPlayer(a[1])
+    if p then p:Kick(table.concat(a, " ", 2)) end
+    Bridge.send("kick", a)
+    toast("Kick → " .. (a[1] or "?"), "info")
+end)
+
+regParam("ban|banir", "Admin", "Bane um jogador (via servidor).", "<jogador> [motivo]", function(a)
+    Bridge.send("ban", a)
+    toast("Ban enviado → " .. (a[1] or "?"), "info")
+end)
+
+regParam("admin|daradmin", "Admin", "Concede admin a um jogador (via servidor).", "[jogador]", function(a)
+    Bridge.send("admin", a)
+    toast("Admin enviado", "info")
+end)
+
+regParam("unadmin|tiraradmin", "Admin", "Remove admin de um jogador (via servidor).", "[jogador]", function(a)
+    Bridge.send("unadmin", a)
+    toast("Unadmin enviado", "info")
+end)
+
+regParam("heal|cura", "Admin", "Cura um jogador ou você mesmo.", "[jogador]", function(a)
+    local p = a[1] and findPlayer(a[1])
+    local char = p and p.Character or LP.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then hum.Health = hum.MaxHealth end
+    Bridge.send("heal", a)
+    toast("Heal → " .. (p and p.Name or "self"), "good")
+end)
+
+regParam("fling", "Admin", "Arremessa um jogador com força (fling).", "[jogador]", function(a)
+    local p = a[1] and findPlayer(a[1])
+    local char = p and p.Character or LP.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then hrp.AssemblyLinearVelocity = Vector3.new(0, 250, 0) end
+    Bridge.send("fling", a)
+    toast("Fling aplicado", "good")
+end)
+
+regParam("gravity|gravidade", "Util", "Altera a gravidade do workspace.", "<número>", function(a)
+    State.gravity = tonumber(a[1]) or 196.2
+    workspace.Gravity = State.gravity
+    Bridge.send("gravity", { tostring(State.gravity) })
+    toast("Gravity = " .. State.gravity, "good")
+end)
+
+regParam("fov", "Util", "Ajusta o campo de visão da câmera.", "<número>", function(a)
+    local cam = workspace.CurrentCamera
+    if cam then cam.FieldOfView = tonumber(a[1]) or 70 end
+    toast("FOV ajustado", "good")
+end)
+
+regParam("time|hora", "Util", "Define a hora do dia (0 a 24).", "<número>", function(a)
+    Lighting.ClockTime = tonumber(a[1]) or 14
+    toast("Hora = " .. Lighting.ClockTime, "good")
+end)
+
+regParam("chat|falar", "Util", "Envia mensagem no chat do jogo.", "<texto>", function(a, rest)
+    local msg = rest ~= "" and rest or table.concat(a, " ")
+    if msg ~= "" then Bridge.chat(msg) end
+    toast("Chat: " .. msg, "good")
+end)
+
+regParam("cmd|comando", "Util", "Envia um comando ao servidor com prefixo (bypass de UI).", "<comando>", function(a, rest)
+    local full = rest ~= "" and rest or table.concat(a, " ")
+    local hits = Bridge.send(full, {})
+    toast("Enviado ao servidor (" .. hits .. " canais)", "info")
+end)
+
+regParam("remote|r", "Util", "Dispara um RemoteEvent/RemoteFunction específico pelo nome.", "<nome> [args]", function(a)
+    local name = a[1]
+    if not name then return toast("Informe o nome do remote", "bad") end
+    local args = {}
+    for i = 2, #a do args[#args + 1] = a[i] end
+    for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
+        if (d:IsA("RemoteEvent") or d:IsA("RemoteFunction")) and d.Name:lower() == name:lower() then
+            if d:IsA("RemoteEvent") then
+                d:FireServer(table.unpack(args))
+                return toast("FireServer → " .. d.Name, "good")
+            else
+                local ok, res = pcall(function() return d:InvokeServer(table.unpack(args)) end)
+                return toast("Invoke → " .. tostring(res), ok and "good" or "bad")
+            end
+        end
+    end
+    toast("Remote não encontrado: " .. name, "bad")
+end)
+
+regParam("setprefix", "Util", "Define o prefixo de chat usado pelo bypass (ex: : / !).", "<prefixo>", function(a)
+    local p = a[1]
+    if p and #p > 0 then
+        CONFIG.prefixes = { p:sub(1, 1) }
+        State.chatPrefix = p:sub(1, 1)
+        toast("Prefixo = " .. p:sub(1, 1), "good")
+    end
+end)
+
+-------------------------------------------------------------------
+-- 6.4 AÇÕES (clique executa direto, sem args)
+-------------------------------------------------------------------
+regAction("respawn|renascer", "Player", "Reseta o personagem e renasce.", function()
+    if LP.Character then LP.Character:BreakJoints() end
+    toast("Respawn executado", "info")
+end)
+
+regAction("dance|dancar", "Player", "Faz o personagem dançar.", function()
+    local _, hum = getChar()
+    if not hum then return end
+    local anim = hum:FindFirstChildOfClass("Animator") or new("Animator", { Parent = hum })
+    local a = new("Animation", { AnimationId = "rbxassetid://507771019" })
+    local track = anim:LoadAnimation(a)
+    track:Play()
+    toast("Dançando!", "good")
+end)
+
+regAction("copypos|pos", "Util", "Copia a posição atual para a área de transferência.", function()
+    local _, _, hrp = getChar()
+    if not hrp then return end
+    local p = hrp.Position
+    local txt = string.format("%.1f, %.1f, %.1f", p.X, p.Y, p.Z)
+    if setclipboard then pcall(setclipboard, txt) end
+    toast("Posição copiada: " .. txt, "good")
+end)
+
+regAction("players|jogadores", "Util", "Lista os jogadores online no console do painel.", function()
+    local names = {}
+    for _, p in ipairs(Players:GetPlayers()) do table.insert(names, p.Name) end
+    log("info", "Jogadores (" .. #names .. "): " .. table.concat(names, ", "))
+    toast(#names .. " jogadores online", "info")
+end)
+
+regAction("remotes|lista", "Util", "Lista todos os remotes detectados.", function()
+    Bridge.scan()
+    local names = {}
+    for _, r in ipairs(Bridge.remotes) do table.insert(names, r.Name) end
+    for _, f in ipairs(Bridge.funcs) do table.insert(names, f.Name .. "()") end
+    log("info", "Remotes (" .. #names .. "): " .. table.concat(names, ", "))
+    toast(#names .. " remotes encontrados", "info")
+end)
+
+regAction("permcheck|permissao", "Admin", "Diagnóstico: mostra spoofs, remotes e prefixo ativos.", function()
+    log("info", "Spoofs: " .. (#Bridge.spoofed > 0 and table.concat(Bridge.spoofed, ", ") or "nenhum"))
+    log("info", "Remotes candidatos: " .. (#Bridge.remotes + #Bridge.funcs) .. " | Prefixo: " .. CONFIG.prefixes[1])
+    toast("Diagnóstico enviado ao console do painel", "info")
+end)
+
+regAction("help|ajuda", "Util", "Explica a interação do painel.", function()
+    toast("Toque = liga/desliga (verde) • ⌨ ARG = preenche input • ⚡ = executa", "info")
+end)
+
+regAction("rejoin|reconectar", "Util", "Reconecta ao servidor atual.", function()
+    pcall(function() game:GetService("TeleportService"):Teleport(game.PlaceId, LP) end)
+    toast("Reconectando...", "info")
+end)
+
+regAction("unload|descarregar", "Util", "Encerra o script completamente.", function()
+    if getgenv and getgenv().SUPREMO_UNLOAD then getgenv().SUPREMO_UNLOAD() end
+end)
+
+regAction("resetui", "Util", "Recentraliza o painel na tela.", function()
+    local vp = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
+    wrapper.Position = UDim2.new(0, (vp.X - wrapper.AbsoluteSize.X) / 2, 0, (vp.Y - wrapper.AbsoluteSize.Y) / 2)
+    toast("Painel recentralizado", "info")
+end)
+
+--=================================================================
+-- 7) CONSTRUÇÃO DA UI
+--=================================================================
+local GUI_NAME = "SupremoCmdPanel"
+pcall(function()
+    local old = getGuiParent():FindFirstChild(GUI_NAME)
+    if old then old:Destroy() end
+end)
+
+gui = new("ScreenGui", { Name = GUI_NAME, ResetOnSpawn = false, IgnoreGuiInset = true,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = 999, Parent = getGuiParent() })
+if syn and syn.protect_gui then pcall(syn.protect_gui, gui) end
+
+toastHolder = new("Frame", { AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 12),
+    Size = UDim2.new(0, 320, 0, 10), BackgroundTransparency = 1, Parent = gui }, {
+    new("UIListLayout", { HorizontalAlignment = Enum.HorizontalAlignment.Center,
+        Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }) })
+
+local vp0 = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
+
+-- wrapper (sombra + conteúdo)
+local wrapper = new("Frame", { AnchorPoint = Vector2.new(0, 0), BackgroundTransparency = 1,
+    Size = UDim2.fromOffset(CONFIG.panelSize.X, CONFIG.panelSize.Y),
+    Position = UDim2.new(0, (vp0.X - CONFIG.panelSize.X) / 2, 0, (vp0.Y - CONFIG.panelSize.Y) / 2), Parent = gui })
+local wrapperScale = new("UIScale", { Scale = 1, Parent = wrapper })
+
+new("Frame", { Size = UDim2.new(1, 0, 1, 0), Position = UDim2.new(0, 5, 0, 8),
+    BackgroundColor3 = Color3.new(0,0,0), BackgroundTransparency = 0.55, BorderSizePixel = 0, ZIndex = 1,
+    Parent = wrapper }, { corner(new("Frame"), 16) })
+
+local main = new("Frame", { Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = CONFIG.bg,
+    BorderSizePixel = 0, ZIndex = 2, Parent = wrapper })
+corner(main, 16); stroke(main, CONFIG.card, 1, 0.2); grad(main, CONFIG.bg2, CONFIG.bg, 90)
+
+-- header
+local header = new("Frame", { Size = UDim2.new(1, 0, 0, 52), BackgroundTransparency = 1, ZIndex = 3, Parent = main })
+new("Frame", { Size = UDim2.new(1, 0, 0, 1), Position = UDim2.new(0, 0, 1, -1),
+    BackgroundColor3 = CONFIG.card, BackgroundTransparency = 0.4, BorderSizePixel = 0, Parent = header })
+
+local dot = new("Frame", { Size = UDim2.fromOffset(10, 10), Position = UDim2.new(0, 16, 0.5, -6),
+    BackgroundColor3 = CONFIG.accent, BorderSizePixel = 0, ZIndex = 4, Parent = header }, { corner(new("Frame"), 999) })
+grad(dot, CONFIG.accent, CONFIG.accent2, 45)
+
+new("TextLabel", { Text = "PAINEL SUPREMO", Font = FONT_B, TextSize = 15, TextColor3 = CONFIG.text,
+    BackgroundTransparency = 1, Position = UDim2.new(0, 34, 0, 8), Size = UDim2.new(0, 220, 0, 18),
+    TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 4, Parent = header })
+
+new("TextLabel", { Text = "v" .. VERSION .. "  •  " .. #Commands .. " comandos  •  bridge ativo",
+    Font = FONT_R, TextSize = 10, TextColor3 = CONFIG.sub, BackgroundTransparency = 1,
+    Position = UDim2.new(0, 34, 0, 26), Size = UDim2.new(0, 260, 0, 14),
+    TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 4, Parent = header })
+
+local function headerButton(txt, xOff)
+    local b = new("TextButton", { Text = txt, Font = FONT_B, TextSize = 16, TextColor3 = CONFIG.sub,
+        BackgroundColor3 = CONFIG.card, BorderSizePixel = 0, AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, xOff, 0.5, 0), Size = UDim2.fromOffset(44, 44),
+        AutoButtonColor = false, ZIndex = 10, Parent = header })
+    corner(b, 12); stroke(b, CONFIG.card, 1, 0.5)
+    return b
+end
+local btnClose = headerButton("✕", -10)
+local btnMin   = headerButton("—", -60)
+
+-- filtros
+local filterBar = new("Frame", { Size = UDim2.new(1, -24, 0, 30), Position = UDim2.new(0, 12, 0, 58),
+    BackgroundTransparency = 1, ZIndex = 3, Parent = main }, {
+    new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6) }) })
+
+local currentFilter = "todos"
+local filterButtons = {}
+for _, f in ipairs({ { "todos", "TODOS" }, { "toggle", "TOGGLES" }, { "param", "ARGS" }, { "action", "AÇÕES" } }) do
+    local b = new("TextButton", { Text = f[2], Font = FONT_B, TextSize = 10, TextColor3 = CONFIG.sub,
+        BackgroundColor3 = CONFIG.card, BorderSizePixel = 0, Size = UDim2.fromOffset(74, 30),
+        AutoButtonColor = false, ZIndex = 4, Parent = filterBar })
+    corner(b, 9)
+    b.MouseButton1Click:Connect(function()
+        playClick()
+        currentFilter = f[1]
+        for k, fb in pairs(filterButtons) do
+            fb.BackgroundColor3 = (k == f[1]) and CONFIG.accent or CONFIG.card
+            fb.TextColor3 = (k == f[1]) and Color3.new(1,1,1) or CONFIG.sub
+        end
+        if applyFilter then applyFilter() end
+    end)
+    filterButtons[f[1]] = b
+end
+filterButtons.todos.BackgroundColor3 = CONFIG.accent
+filterButtons.todos.TextColor3 = Color3.new(1, 1, 1)
+
+-- busca
+local searchBox = new("Frame", { Size = UDim2.new(1, -24, 0, 34), Position = UDim2.new(0, 12, 0, 94),
+    BackgroundColor3 = CONFIG.card, BorderSizePixel = 0, ZIndex = 3, Parent = main })
+corner(searchBox, 10); stroke(searchBox, CONFIG.card, 1, 0.5)
+local searchInput = new("TextBox", { Size = UDim2.new(1, -24, 1, 0), Position = UDim2.new(0, 12, 0, 0),
+    BackgroundTransparency = 1, Font = FONT_M, TextSize = 13, TextColor3 = CONFIG.text,
+    PlaceholderText = "Buscar comando...", PlaceholderColor3 = CONFIG.sub,
+    TextXAlignment = Enum.TextXAlignment.Left, ClearTextOnFocus = false, ZIndex = 4, Parent = searchBox })
+
+-- lista
+local listFrame = new("ScrollingFrame", { Size = UDim2.new(1, -16, 1, -246), Position = UDim2.new(0, 8, 0, 134),
+    BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 4,
+    ScrollBarImageColor3 = CONFIG.accent, ScrollBarImageTransparency = 0.3,
+    CanvasSize = UDim2.new(0, 0, 0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    ScrollingDirection = Enum.ScrollingDirection.Y, ElasticBehavior = Enum.ElasticBehavior.WhenScrollable,
+    Active = true, ZIndex = 3, Parent = main }, {
+    new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }) })
+
+-- rodapé
+logLabel = new("TextLabel", { Size = UDim2.new(1, -24, 0, 40), Position = UDim2.new(0, 12, 1, -108),
+    BackgroundColor3 = CONFIG.card, BorderSizePixel = 0, Font = FONT_R, TextSize = 10.5,
+    TextColor3 = CONFIG.sub, TextXAlignment = Enum.TextXAlignment.Left,
+    TextYAlignment = Enum.TextYAlignment.Top, TextWrapped = true,
+    Text = "› Painel pronto.", ZIndex = 3, Parent = main })
+corner(logLabel, 8); pad(logLabel, 5, 8, 5, 8)
+
+local inputFrame = new("Frame", { Size = UDim2.new(1, -24, 0, 48), Position = UDim2.new(0, 12, 1, -60),
+    BackgroundColor3 = CONFIG.card, BorderSizePixel = 0, ZIndex = 3, Parent = main })
+corner(inputFrame, 12); stroke(inputFrame, CONFIG.card, 1, 0.35)
+
+local cmdInput = new("TextBox", { Size = UDim2.new(1, -112, 1, 0), Position = UDim2.new(0, 12, 0, 0),
+    BackgroundTransparency = 1, Font = FONT_M, TextSize = 13.5, TextColor3 = CONFIG.text,
+    PlaceholderText = "comando + args...", PlaceholderColor3 = CONFIG.sub,
+    TextXAlignment = Enum.TextXAlignment.Left, ClearTextOnFocus = false, ZIndex = 4, Parent = inputFrame })
+
+local btnSend = new("TextButton", { Text = "▶ ENVIAR", Font = FONT_B, TextSize = 11,
+    TextColor3 = Color3.new(1,1,1), BackgroundColor3 = CONFIG.accent, BorderSizePixel = 0,
+    AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -4, 0.5, 0), Size = UDim2.fromOffset(98, 40),
+    AutoButtonColor = false, ZIndex = 4, Parent = inputFrame })
+corner(btnSend, 10); grad(btnSend, CONFIG.accent, CONFIG.accent2, 20)
+
+--=================================================================
+-- 8) DESPACHANTE
+--=================================================================
+local function findCommand(name)
+    name = name:lower():gsub("^[:/]", "")
+    for _, d in ipairs(Commands) do
+        if d.name:lower() == name then return d end
+        for _, al in ipairs(d.aliases) do if al:lower() == name then return d end end
+        for alias in d.name:gmatch("[^|]+") do if alias:lower() == name then return d end end
+    end
+    return nil
+end
+
+local refreshRows -- forward
+
+local function runToggle(def, force)
+    local on = force
+    if on == nil then on = not def.get() end
+    local ok, err = pcall(def.set, on)
+    if not ok then
+        toast("Erro: " .. tostring(err), "bad")
+        log("bad", "✖ " .. def.name .. ": " .. tostring(err))
+    else
+        log("ok", (on and "✔ " or "✖ ") .. def.name .. (on and " ATIVADO" or " DESATIVADO"))
+    end
+    if refreshRows then refreshRows() end
+end
+
+local function dispatch(raw)
+    raw = (raw or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if raw == "" then return false end
+
+    local name, rest = raw:match("^(%S+)%s*(.*)$")
+    rest = rest or ""
+    local args = {}
+    for w in rest:gmatch("%S+") do table.insert(args, w) end
+
+    local def = findCommand(name)
+    if not def then return false end
+
+    if def.type == "toggle" then
+        local mode = args[1] and args[1]:lower()
+        runToggle(def, (mode == "on") and true or (mode == "off") and false or nil)
+        return true
+    end
+
+    local ok, err = pcall(def.run, args, rest, raw)
+    if ok then
+        log("ok", "✔ " .. raw)
+    else
+        log("bad", "✖ " .. tostring(err))
+        toast("Erro: " .. tostring(err), "bad")
+    end
+    return true
+end
+
+local function sendCommand()
+    local txt = cmdInput.Text
+    if txt == "" then return end
+    playClick()
+    btnSend.Text = "⏳ ..."
+
+    local ok = dispatch(txt)
+    if not ok then
+        local hits = Bridge.send(txt, {})
+        log("info", "↗ enviado ao servidor (" .. hits .. " canais)")
+        toast("Comando repassado ao servidor via bridge", "info")
+    end
+
+    task.delay(0.6, function() btnSend.Text = "▶ ENVIAR" end)
+end
+
+btnSend.MouseButton1Click:Connect(sendCommand)
+cmdInput.FocusLost:Connect(function(enter) if enter then sendCommand() end end)
+
+--=================================================================
+-- 9) RENDERIZAÇÃO DA LISTA (cores por tipo)
+--=================================================================
+local CAT_ORDER = { "Player", "Admin", "Util" }
+table.sort(Commands, function(a, b)
+    local ia, ib = 99, 99
+    for i, c in ipairs(CAT_ORDER) do
+        if a.cat == c then ia = i end
+        if b.cat == c then ib = i end
+    end
+    if ia ~= ib then return ia < ib end
+    if a.type ~= b.type then return a.type < b.type end
+    return a.name < b.name
+end)
+
+local function buildRow(def)
+    local isToggle = def.type == "toggle"
+    local isParam  = def.type == "param"
+
+    local row = new("TextButton", {
+        Size = UDim2.new(1, -6, 0, 58),
+        BackgroundColor3 = isToggle and CONFIG.rowToggleOff or (isParam and CONFIG.rowParam or CONFIG.rowAction),
+        BorderSizePixel = 0, Text = "", AutoButtonColor = false, ZIndex = 3, Parent = listFrame,
+    })
+    corner(row, 12)
+    local st = stroke(row, isToggle and CONFIG.card or (isParam and CONFIG.accent or CONFIG.info), 1, 0.55)
+
+    -- barra lateral indicadora de tipo
+    local side = new("Frame", { Size = UDim2.new(0, 3, 1, -14), Position = UDim2.new(0, 5, 0, 7),
+        BackgroundColor3 = isToggle and CONFIG.sub or (isParam and CONFIG.accent or CONFIG.info),
+        BorderSizePixel = 0, ZIndex = 4, Parent = row })
+    corner(side, 3)
+
+    new("TextLabel", { Size = UDim2.new(1, -78, 0, 20), Position = UDim2.new(0, 16, 0, 8),
+        BackgroundTransparency = 1, Font = FONT_B, TextSize = 13, TextColor3 = CONFIG.text,
+        TextXAlignment = Enum.TextXAlignment.Left, Text = def.name:gsub("|.*", "") ..
+            ((def.args and def.args ~= "") and ("  " .. def.args) or ""), ZIndex = 4, Parent = row })
+
+    new("TextLabel", { Size = UDim2.new(1, -78, 0, 16), Position = UDim2.new(0, 16, 0, 30),
+        BackgroundTransparency = 1, Font = FONT_R, TextSize = 11, TextColor3 = CONFIG.sub,
+        TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+        Text = def.desc, ZIndex = 4, Parent = row })
+
+    local badge = new("TextButton", { Size = UDim2.fromOffset(52, 26), AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -10, 0.5, 0), Font = FONT_B, TextSize = 10,
+        TextColor3 = CONFIG.sub, BackgroundColor3 = CONFIG.bg, BorderSizePixel = 0,
+        AutoButtonColor = false, ZIndex = 5, Parent = row })
+    corner(badge, 8)
+
+    local function paint()
+        if isToggle then
+            local on = def.get()
+            row.BackgroundColor3 = on and CONFIG.rowToggleOn or CONFIG.rowToggleOff
+            st.Color = on and CONFIG.good or CONFIG.card
+            st.Transparency = on and 0.2 or 0.55
+            side.BackgroundColor3 = on and CONFIG.good or CONFIG.sub
+            badge.Text = on and "ON" or "OFF"
+            badge.TextColor3 = on and CONFIG.good or CONFIG.sub
+            badge.BackgroundColor3 = on and Color3.fromRGB(14, 40, 28) or CONFIG.bg
+        else
+            badge.Text = isParam and "⌨ ARG" or "⚡"
+            badge.TextColor3 = isParam and CONFIG.accent2 or CONFIG.info
+        end
+    end
+    paint()
+
+    -- interação principal
+    row.MouseButton1Click:Connect(function()
+        playClick()
+        if isToggle then
+            runToggle(def)
+        elseif isParam then
+            cmdInput.Text = def.name:gsub("|.*", "") .. " "
+            cmdInput:CaptureFocus()
+            log("info", "⌨ " .. def.name .. " " .. (def.args or ""))
+        else
+            local ok, err = pcall(def.run, {}, "", def.name)
+            if ok then log("ok", "✔ " .. def.name) else log("bad", "✖ " .. tostring(err)) end
+        end
+    end)
+
+    -- badge: em toggle também alterna; em param executa com o valor digitado
+    badge.MouseButton1Click:Connect(function()
+        playClick()
+        if isToggle then
+            runToggle(def)
+        elseif isParam then
+            local txt = cmdInput.Text
+            if txt ~= "" and findCommand(txt:match("^(%S+)")) == def then sendCommand()
+            else cmdInput.Text = def.name:gsub("|.*", "") .. " "; cmdInput:CaptureFocus() end
+        else
+            pcall(def.run, {}, "", def.name)
+        end
+    end)
+
+    Rows[def.name] = { frame = row, paint = paint }
+end
+
+local catLabels = {}
+local function buildList()
+    for _, c in ipairs(listFrame:GetChildren()) do
+        if c:IsA("TextButton") or c:IsA("TextLabel") then c:Destroy() end
+    end
+    Rows, catLabels = {}, {}
+    local lastCat
+    for _, d in ipairs(Commands) do
+        if d.cat ~= lastCat then
+            lastCat = d.cat
+            local h = new("TextLabel", { Size = UDim2.new(1, -4, 0, 20), BackgroundTransparency = 1,
+                Font = FONT_B, TextSize = 10, TextColor3 = CONFIG.accent2,
+                TextXAlignment = Enum.TextXAlignment.Left, Text = string.upper(d.cat), ZIndex = 3, Parent = listFrame })
+            pad(h, 0, 0, 0, 6)
+            catLabels[d.cat] = h
+        end
+        buildRow(d)
+    end
+end
+
+buildList()
+
+refreshRows = function()
+    for _, r in pairs(Rows) do pcall(r.paint) end
+end
+
+local function applyFilter()
+    local q = searchInput.Text:lower()
+    local catVisible = {}
+    for _, d in ipairs(Commands) do
+        local r = Rows[d.name]
+        if r then
+            local typeOk = (currentFilter == "todos") or (d.type == currentFilter)
+            local textOk = q == "" or d.name:lower():find(q, 1, true) or d.desc:lower():find(q, 1, true)
+            local vis = typeOk and textOk
+            r.frame.Visible = vis
+            if vis then catVisible[d.cat] = true end
+        end
+    end
+    for cat, lbl in pairs(catLabels) do lbl.Visible = catVisible[cat] == true end
+end
+
+searchInput:GetPropertyChangedSignal("Text"):Connect(applyFilter)
+
+--=================================================================
+-- 10) DRAG (TOUCH + MOUSE)
+--=================================================================
+local function makeDraggable(target, handle)
+    handle = handle or target
+    local dragging, dragStart, startPos = false, nil, nil
+
+    handle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging, dragStart, startPos = true, input.Position, target.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch then
+            local d = input.Position - dragStart
+            target.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
+                                        startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        end
+    end)
+end
+
+--=================================================================
+-- 11) ÍCONE FLUTUANTE + RESPONSIVIDADE
+--=================================================================
+local floatBtn = new("TextButton", { Name = "FloatIcon", Text = "Δ", Font = FONT_B, TextSize = 15,
+    TextColor3 = Color3.new(1,1,1), BackgroundColor3 = CONFIG.accent, BorderSizePixel = 0,
+    Size = UDim2.fromOffset(CONFIG.floatSize, CONFIG.floatSize), Position = UDim2.new(0, 14, 0, 180),
+    Visible = false, AutoButtonColor = false, ZIndex = 20, Parent = gui })
+corner(floatBtn, 999); stroke(floatBtn, CONFIG.accent2, 2, 0.15); grad(floatBtn, CONFIG.accent, CONFIG.accent2, 45)
+local floatScale = new("UIScale", { Scale = 1, Parent = floatBtn })
+
+local function clampToScreen(frame, w, h)
+    local cam = workspace.CurrentCamera
+    local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+    frame.Position = UDim2.new(0, math.clamp(frame.Position.X.Offset, 0, math.max(0, vp.X - w)),
+                                0, math.clamp(frame.Position.Y.Offset, 0, math.max(0, vp.Y - h)))
+end
+
+local function applyResponsive()
+    local cam = workspace.CurrentCamera
+    local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+    local sw = (vp.X * 0.94) / CONFIG.panelSize.X
+    local sh = (vp.Y * 0.88) / CONFIG.panelSize.Y
+    local scale = math.clamp(math.min(sw, sh), 0.5, 1.25)
+    wrapperScale.Scale = scale
+    floatScale.Scale = math.clamp(scale, 0.85, 1.1)
+    clampToScreen(wrapper, CONFIG.panelSize.X * scale, CONFIG.panelSize.Y * scale)
+    clampToScreen(floatBtn, CONFIG.floatSize * floatScale.Scale, CONFIG.floatSize * floatScale.Scale)
+end
+
+local function minimize()
+    playClick()
+    tween(wrapper, 0.18, { Size = UDim2.new(0, 0, 0, 0) })
+    task.delay(0.16, function()
+        wrapper.Visible = false
+        floatBtn.Visible = true
+        floatBtn.Size = UDim2.new(0, 0, 0, 0)
+        tween(floatBtn, 0.18, { Size = UDim2.fromOffset(CONFIG.floatSize, CONFIG.floatSize) })
+    end)
+    toast("Minimizado — toque no Δ para voltar", "info")
+end
+
+local function restore()
+    playClick()
+    floatBtn.Visible = false
+    wrapper.Visible = true
+    wrapper.Size = UDim2.new(0, 0, 0, 0)
+    tween(wrapper, 0.2, { Size = UDim2.fromOffset(CONFIG.panelSize.X, CONFIG.panelSize.Y) })
+end
+
+floatBtn.MouseButton1Click:Connect(restore)
+
+local lastClose = 0
+local function closePanel()
+    playClick()
+    local now = tick()
+    if now - lastClose < 3 then
+        if getgenv and getgenv().SUPREMO_UNLOAD then getgenv().SUPREMO_UNLOAD() end
+    else
+        lastClose = now
+        toast("Toque em ✕ novamente para fechar", "warn")
+    end
+end
+
+btnMin.MouseButton1Click:Connect(minimize)
+btnClose.MouseButton1Click:Connect(closePanel)
+
+makeDraggable(wrapper, header)
+makeDraggable(floatBtn, floatBtn)
+applyResponsive()
+
+if workspace.CurrentCamera then
+    workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(applyResponsive)
+end
+
+--=================================================================
+-- 12) UNLOAD / RESPAWN
+--=================================================================
+getgenv().SUPREMO_UNLOAD = function()
+    for k in pairs(State) do
+        if type(State[k]) == "boolean" and State[k] then
+            local d = findCommand(k)
+            if d and d.type == "toggle" then pcall(d.set, false) end
+        end
+    end
+    for _, c in pairs(Loops) do pcall(function() c:Disconnect() end) end
+    Loops = {}
+    Bridge.unspoof()
+    pcall(function() gui:Destroy() end)
+    getgenv().SUPREMO_LOADED = false
+    getgenv().SUPREMO_UNLOAD = nil
+end
+getgenv().SUPREMO_LOADED = true
+
+LP.CharacterAdded:Connect(function()
+    task.wait(0.7)
+    if State.walkSpeed ~= 16 then pcall(function() local _, h = getChar(); h.WalkSpeed = State.walkSpeed end) end
+    if State.gravity ~= 196.2 then workspace.Gravity = State.gravity end
+end)
+
+--=================================================================
+-- 13) BOOT
+--=================================================================
+task.spawn(function()
+    local n = Bridge.scan()
+    Bridge.spoof()
+    log("ok", "✔ " .. #Commands .. " comandos carregados")
+    log("info", "↗ " .. n .. " remotes candidatos | bypass de permissão ativo")
+    toast("Painel Supremo v" .. VERSION .. " pronto", "good")
+    print(("[Painel Supremo] v%s | comandos: %d | remotes: %d"):format(VERSION, #Commands, n))
+end)
